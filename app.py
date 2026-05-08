@@ -138,9 +138,10 @@ with st.sidebar:
     if st.button("Добавить в мониторинг"):
         if new_id and new_geo != "":
             u_key = f"{new_id}_{new_geo}"
-            if u_key in db: st.warning("Уже отслеживается!")
+            if u_key in db: 
+                st.warning("Уже отслеживается!")
             else:
-                with st.spinner(f"Загрузка {new_geo}..."):
+                with st.status(f"Загрузка {new_geo}...", expanded=False) as status:
                     try:
                         res = fetch_gp_data(new_id, new_geo)
                         db[u_key] = {
@@ -148,9 +149,13 @@ with st.sidebar:
                             "current": {"title": res['title'], "summary": res['summary'], "description": res['description']},
                             "history": [], "check_log": [{"time": get_minsk_time(), "status": "🆕 Добавлено"}]
                         }
-                        save_data(db)
-                        st.rerun()
-                    except: st.error("Ошибка: Приложение не найдено.")
+                        if save_data(db):
+                            status.update(label="✅ Готово!", state="complete", expanded=False)
+                            st.rerun()
+                    except:
+                        status.update(label="❌ Ошибка: Приложение не найдено.", state="error", expanded=True)
+        else:
+            st.warning("Заполните ID и выберите локаль!")
 
 # 📦 СПИСОК ПРИЛОЖЕНИЙ
 for key, info in db.items():
