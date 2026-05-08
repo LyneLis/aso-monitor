@@ -2,17 +2,17 @@ name: ASO Daily Check
 
 on:
   schedule:
-    - cron: '0 10 * * *' # Запуск каждый день в 10:00 утра (по UTC)
-  workflow_dispatch: # Позволяет запускать вручную кнопкой
+    - cron: '0 10 * * *' # Запуск каждый день в 10:00 (UTC)
+  workflow_dispatch: # Кнопка ручного запуска
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
       - name: Set up Python
-        uses: ambassadors/setup-python@v2
+        uses: actions/setup-python@v4
         with:
           python-version: '3.9'
       - name: Install dependencies
