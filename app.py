@@ -3,7 +3,7 @@ import json
 import pandas as pd
 import requests
 from google_play_scraper import app
-from datetime import datetime
+from datetime import datetime, timedelta
 from streamlit_gsheets import GSheetsConnection
 
 st.set_page_config(page_title="ASO Monitor PRO", layout="wide")
@@ -14,6 +14,10 @@ try:
 except Exception as e:
     st.error(f"Ошибка инициализации подключения: {e}")
     DB_AVAILABLE = False
+
+def get_minsk_time():
+    # Минск находится в UTC+3
+    return (datetime.utcnow() + timedelta(hours=3)).strftime("%d.%m.%Y %H:%M:%S")
 
 def get_lang(geo_code):
     mapping = {'us': 'en', 'uk': 'en', 'gb': 'en', 'au': 'en', 'ca': 'en'}
@@ -40,8 +44,17 @@ def load_data():
             
             pkg_id = str(row['package_id']).strip()
             geo = str(row['geo']).strip().lower()
-            
             unique_key = f"{pkg_id}_{geo}"
+            
+            # Безопасно загружаем логи проверок, если колонка уже существует
+            check_log = []
+            if 'check_log' in df.columns:
+                log_val = row['check_log']
+                if isinstance(log_val, str) and log_val.strip() != "":
+                    try:
+                        check_log = json.loads(log_val)
+                    except:
+                        pass
             
             data[unique_key] = {
                 "package_id": pkg_id,
@@ -51,7 +64,8 @@ def load_data():
                     "summary": str(row['summary']),
                     "description": str(row['description'])
                 },
-                "history": json.loads(row['history']) if isinstance(row['history'], str) and row['history'] != "" else []
+                "history": json.loads(row['history']) if isinstance(row['history'], str) and row['history'] != "" else [],
+                "check_log": check_log
             }
         return data
     except Exception as e:
@@ -68,7 +82,8 @@ def save_data(data):
                 "title": info['current']['title'],
                 "summary": info['current']['summary'],
                 "description": info['current']['description'],
-                "history": json.dumps(info['history'], ensure_ascii=False)
+                "history": json.dumps(info['history'], ensure_ascii=False),
+                "check_log": json.dumps(info.get('check_log', []), ensure_ascii=False)
             })
         conn.update(data=pd.DataFrame(rows))
         st.toast("✅ Данные успешно сохранены в Google Sheets!")
@@ -90,6 +105,8 @@ if st.button("🔍 Проверить все приложения сейчас")
                 geo = info['geo']
                 target_lang = get_lang(geo)
                 new_m = app(pkg_id, lang=target_lang, country=geo)
+                
+                log_entry = {"time": get_minsk_time(), "status": "🟢 Без изменений"}
 
                 if new_m['title'] != info['current']['title'] or new_m['summary'] != info['current']['summary']:
                     msg = f"⚠️ ИЗМЕНЕНИЕ ASO!\nГЕО: {geo.upper()}\nПриложение: {new_m['title']}\nID: {pkg_id}\n\nБыло: {info['current']['title']}\nСтало: {new_m['title']}"
@@ -101,16 +118,23 @@ if st.button("🔍 Проверить все приложения сейчас")
                         "summary": new_m['summary'], 
                         "description": new_m['description']
                     }
+                    log_entry["status"] = "🔴 Найдено изменение!"
                     updates_count += 1
+                
+                # Добавляем в лог и храним только последние 15 записей
+                info.setdefault('check_log', []).append(log_entry)
+                info['check_log'] = info['check_log'][-15:]
+                
             except:
-                pass
+                info.setdefault('check_log', []).append({"time": get_minsk_time(), "status": "⚪ Ошибка связи со стором"})
+                info['check_log'] = info['check_log'][-15:]
         
+        save_data(db)
         if updates_count > 0:
-            save_data(db)
             st.success(f"Проверка завершена! Найдено и отправлено в TG изменений: {updates_count}")
-            st.rerun()
         else:
             st.info("Проверка завершена. Изменений у конкурентов не обнаружено.")
+        st.rerun()
 
 # Боковое меню
 with st.sidebar:
@@ -135,7 +159,9 @@ with st.sidebar:
                             "description": res['description']
                         }
                         current_db = db.copy()
-                        current_db[unique_key] = {"package_id": new_id, "geo": new_geo, "current": meta, "history": []}
+                        # При добавлении сразу пишем первый лог
+                        first_log = [{"time": get_minsk_time(), "status": "🆕 Добавлено в трекер"}]
+                        current_db[unique_key] = {"package_id": new_id, "geo": new_geo, "current": meta, "history": [], "check_log": first_log}
                         
                         if save_data(current_db):
                             st.balloons()
@@ -154,11 +180,9 @@ else:
         pkg_id = info['package_id']
         geo = info['geo']
         
-        # Создаем две колонки: 11 частей под карточку, 1 часть под кнопку корзины
         col_expander, col_delete = st.columns([11, 1])
         
         with col_expander:
-            # Оригинальный вид раскрывающейся карточки
             with st.expander(f"📦 [{geo.upper()}] {info['current']['title']} ({pkg_id})"):
                 col1, col2 = st.columns([1, 2])
                 
@@ -168,6 +192,8 @@ else:
                             try:
                                 target_lang = get_lang(geo)
                                 new_m = app(pkg_id, lang=target_lang, country=geo)
+                                
+                                log_entry = {"time": get_minsk_time(), "status": "🟢 Без изменений"}
                                 
                                 if (new_m['title'] != info['current']['title'] or 
                                     new_m['summary'] != info['current']['summary']):
@@ -181,12 +207,16 @@ else:
                                         "summary": new_m['summary'],
                                         "description": new_m['description']
                                     }
-                                    
-                                    if save_data(db):
-                                        st.balloons()
-                                        st.rerun()
+                                    log_entry["status"] = "🔴 Найдено изменение!"
+                                    st.balloons()
                                 else:
                                     st.info("Изменений не найдено.")
+                                
+                                info.setdefault('check_log', []).append(log_entry)
+                                info['check_log'] = info['check_log'][-15:]
+                                save_data(db)
+                                st.rerun()
+                                
                             except Exception as e:
                                 st.error(f"Не удалось связаться с Google Play: {e}")
                 
@@ -195,7 +225,7 @@ else:
                     st.write(f"**Short Description:** {info['current']['summary']}")
 
                 if info['history']:
-                    st.warning("⚠️ Зафиксированы изменения!")
+                    st.warning("⚠️ Зафиксированы старые изменения!")
                     last_ver = info['history'][-1]
                     
                     if last_ver['title'] != info['current']['title']:
@@ -210,9 +240,18 @@ else:
                         file_name=f"aso_report_{pkg_id}_{geo}.txt",
                         key=f"dl_{key}"
                     )
+                
+                # --- БЛОК ИСТОРИИ ПРОВЕРОК ---
+                st.markdown("---")
+                st.markdown("🕒 **История проверок (Время Минское):**")
+                if info.get('check_log'):
+                    # Показываем новые сверху
+                    for log in reversed(info['check_log']):
+                        st.text(f"[{log['time']}] {log['status']}")
+                else:
+                    st.text("Проверок еще не было.")
                     
         with col_delete:
-            # Кнопка удаления будет висеть ровно справа от панели с названием
             if st.button("🗑️", key=f"del_{key}", help="Удалить приложение"):
                 del db[key]
                 save_data(db)
