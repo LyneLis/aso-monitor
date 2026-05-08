@@ -3,20 +3,17 @@ import json
 import pandas as pd
 from google_play_scraper import app
 from datetime import datetime
-
-# ВОТ ОНО! Правильное имя модуля для импорта:
 from streamlit_gsheets import GSheetsConnection
 
-# 1. Настройка страницы
+# Настройка страницы
 st.set_page_config(page_title="ASO Monitor PRO", layout="wide")
 
-# 2. Подключение к Google Sheets
+# Подключение к Google Sheets
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
     DB_AVAILABLE = True
 except Exception as e:
-    st.error(f"Ошибка подключения к базе данных: {e}")
-    st.info("Проверьте, что в настройках (Secrets) добавлена ссылка на таблицу.")
+    st.error(f"Ошибка инициализации подключения: {e}")
     DB_AVAILABLE = False
 
 # --- ФУНКЦИИ ДАННЫХ ---
@@ -25,7 +22,6 @@ def load_data():
     if not DB_AVAILABLE:
         return {}
     try:
-        # Читаем таблицу (ttl=0 отключает кэширование, чтобы видеть изменения сразу)
         df = conn.read(ttl=0)
         if df is None or df.empty:
             return {}
@@ -50,7 +46,9 @@ def load_data():
 
 def save_data(data):
     if not DB_AVAILABLE:
-        return
+        st.error("Ошибка: Подключение к базе данных не установлено.")
+        st.stop() # Замораживаем экран
+        
     try:
         rows = []
         for pkg_id, info in data.items():
@@ -64,28 +62,29 @@ def save_data(data):
             })
         
         df_to_save = pd.DataFrame(rows)
-        # Обновляем таблицу полностью
         conn.update(data=df_to_save)
-        st.toast("✅ Данные в Google Таблице обновлены!")
+        st.success("✅ Данные успешно сохранены в Google Sheets!")
+        return True
     except Exception as e:
-        st.error(f"Не удалось сохранить данные: {e}")
+        # ВЫВОДИМ ОШИБКУ И ОСТАНАВЛИВАЕМ САЙТ
+        st.error(f"❌ ОШИБКА ЗАПИСИ В ТАБЛИЦУ: {e}")
+        st.info("Сайт заморожен. Пожалуйста, скопируй текст ошибки выше и отправь его.")
+        st.stop() # Замораживаем экран
 
 # --- ИНТЕРФЕЙС ---
 
 st.title("🚀 ASO Monitor 24/7")
-st.write("Мониторинг обновлений в Google Play с хранением истории в облаке.")
 
 db = load_data()
 
-# Добавление новых приложений
 with st.sidebar:
     st.header("➕ Добавить приложение")
-    new_id = st.text_input("Package ID", placeholder="com.whatsapp")
+    new_id = st.text_input("Package ID", placeholder="com.openmygame.games...")
     new_geo = st.text_input("ГЕО (страна)", value="us")
     
-    if st.button("Добавить в базу"):
+    if st.button("Добавить в мониторинг"):
         if new_id:
-            with st.spinner("Загружаю данные из Google Play..."):
+            with st.spinner("Запрос к Google Play..."):
                 try:
                     res = app(new_id, lang='en', country=new_geo)
                     meta = {
@@ -93,64 +92,25 @@ with st.sidebar:
                         "summary": res['summary'],
                         "description": res['description']
                     }
-                    db[new_id] = {"geo": new_geo, "current": meta, "history": []}
-                    save_data(db)
-                    st.success(f"Добавлено: {res['title']}")
-                    st.rerun()
+                    current_db = db.copy()
+                    current_db[new_id] = {"geo": new_geo, "current": meta, "history": []}
+                    
+                    if save_data(current_db):
+                        st.balloons()
+                        st.rerun()
                 except Exception as e:
-                    st.error(f"Приложение не найдено: {e}")
+                    # ВЫВОДИМ ОШИБКУ И ОСТАНАВЛИВАЕМ САЙТ
+                    st.error(f"❌ ОШИБКА ПАРСИНГА GOOGLE PLAY: {e}")
+                    st.info("Сайт заморожен. Скопируй ошибку и пришли мне.")
+                    st.stop() # Замораживаем экран
+        else:
+            st.warning("Введите Package ID!")
 
-# Отображение списка
 if not db:
-    st.info("Ваш список мониторинга пока пуст. Добавьте конкурентов в боковом меню.")
+    st.info("База данных пуста. Добавьте первое приложение слева.")
 else:
+    st.write(f"В мониторинге приложений: {len(db)}")
     for pkg_id, info in db.items():
         with st.expander(f"📦 {info['current']['title']} ({pkg_id})"):
-            col1, col2 = st.columns([1, 2])
-            
-            with col1:
-                if st.button("Проверить обновления", key=f"btn_{pkg_id}"):
-                    with st.spinner("Проверяю Google Play..."):
-                        try:
-                            new_m = app(pkg_id, lang='en', country=info['geo'])
-                            
-                            # Сравниваем основные поля
-                            if (new_m['title'] != info['current']['title'] or 
-                                new_m['summary'] != info['current']['summary']):
-                                
-                                # Сохраняем старую версию в историю
-                                info['history'].append(info['current'])
-                                # Обновляем текущую
-                                info['current'] = {
-                                    "title": new_m['title'],
-                                    "summary": new_m['summary'],
-                                    "description": new_m['description']
-                                }
-                                save_data(db)
-                                st.balloons()
-                                st.rerun()
-                            else:
-                                st.info("Изменений не найдено.")
-                        except:
-                            st.error("Не удалось связаться с Google Play.")
-
-            with col2:
-                st.write(f"**ГЕО мониторинга:** {info['geo']}")
-
-            if info['history']:
-                st.warning("⚠️ Зафиксированы изменения!")
-                last_ver = info['history'][-1]
-                
-                # Показываем разницу, если она есть
-                if last_ver['title'] != info['current']['title']:
-                    st.write(f"**Старый Title:** {last_ver['title']}")
-                if last_ver['summary'] != info['current']['summary']:
-                    st.write(f"**Старый Short Description:** {last_ver['summary']}")
-                
-                report_text = f"ASO REPORT for {pkg_id}\n\nOLD:\n{last_ver}\n\nNEW:\n{info['current']}"
-                st.download_button(
-                    label="📥 Скачать отчет для ИИ",
-                    data=report_text,
-                    file_name=f"aso_report_{pkg_id}.txt",
-                    key=f"dl_{pkg_id}"
-                )
+            if st.button("Проверить обновления", key=f"check_{pkg_id}"):
+                st.info("Кнопка проверки пока в режиме ожидания")
