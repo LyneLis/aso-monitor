@@ -41,7 +41,6 @@ def load_data():
             pkg_id = str(row['package_id']).strip()
             geo = str(row['geo']).strip().lower()
             
-            # Уникальный ключ теперь состоит из ID и ГЕО
             unique_key = f"{pkg_id}_{geo}"
             
             data[unique_key] = {
@@ -154,63 +153,70 @@ else:
     for key, info in db.items():
         pkg_id = info['package_id']
         geo = info['geo']
-        with st.expander(f"📦 [{geo.upper()}] {info['current']['title']} ({pkg_id})"):
-            col1, col2 = st.columns([1, 2])
+        
+        # Контейнер для каждого приложения
+        st.container()
+        with st.container():
+            # Верхняя строка колонок (Название | Действия)
+            title_col, check_col, del_col = st.columns([8, 1, 1])
             
-            with col1:
-                # Кнопки в ряд
-                btn_col1, btn_col2 = st.columns([1, 1])
-                with btn_col1:
-                    if st.button("🔄 Проверить", key=f"check_{key}"):
-                        with st.spinner("Сверяю с Google Play..."):
-                            try:
-                                target_lang = get_lang(geo)
-                                new_m = app(pkg_id, lang=target_lang, country=geo)
-                                
-                                if (new_m['title'] != info['current']['title'] or 
-                                    new_m['summary'] != info['current']['summary']):
-                                    
-                                    msg = f"⚠️ ИЗМЕНЕНИЕ ASO!\nГЕО: {geo.upper()}\nПриложение: {new_m['title']}\nID: {pkg_id}\n\nБыло: {info['current']['title']}\nСтало: {new_m['title']}"
-                                    send_telegram_msg(msg)
-
-                                    info['history'].append(info['current'])
-                                    info['current'] = {
-                                        "title": new_m['title'],
-                                        "summary": new_m['summary'],
-                                        "description": new_m['description']
-                                    }
-                                    
-                                    if save_data(db):
-                                        st.balloons()
-                                        st.rerun()
-                                else:
-                                    st.info("Изменений не найдено.")
-                            except Exception as e:
-                                st.error(f"Не удалось связаться с Google Play: {e}")
+            with title_col:
+                # Название и ID как заголовок в Markdown
+                st.markdown(f"📦 [{geo.upper()}] **{info['current']['title']}** ({pkg_id})")
                 
-                with btn_col2:
-                    if st.button("🗑️ Удалить", key=f"del_{key}"):
-                        del db[key]
-                        save_data(db)
-                        st.rerun()
+            with check_col:
+                if st.button("🔄", key=f"check_{key}", help="Проверить updates"):
+                    with st.spinner("Сверяю с Google Play..."):
+                        try:
+                            target_lang = get_lang(geo)
+                            new_m = app(pkg_id, lang=target_lang, country=geo)
+                            
+                            if (new_m['title'] != info['current']['title'] or 
+                                new_m['summary'] != info['current']['summary']):
+                                
+                                msg = f"⚠️ ИЗМЕНЕНИЕ ASO!\nГЕО: {geo.upper()}\nПриложение: {new_m['title']}\nID: {pkg_id}\n\nБыло: {info['current']['title']}\nСтало: {new_m['title']}"
+                                send_telegram_msg(msg)
+
+                                info['history'].append(info['current'])
+                                info['current'] = {
+                                    "title": new_m['title'],
+                                    "summary": new_m['summary'],
+                                    "description": new_m['description']
+                                }
+                                
+                                if save_data(db):
+                                    st.balloons()
+                                    st.rerun()
+                            else:
+                                st.info("Изменений не найдено.")
+                        except Exception as e:
+                            st.error(f"Не удалось связаться с Google Play: {e}")
             
-            with col2:
+            with del_col:
+                if st.button("🗑️", key=f"del_{key}", help="Удалить app"):
+                    del db[key]
+                    save_data(db)
+                    st.rerun()
+            
+            # Раскрываемая область "Подробнее" (без названия в заголовке)
+            with st.expander("Подробнее", expanded=False):
+                # Размещаем информацию последовательно
                 st.write(f"**ГЕО мониторинга:** {geo.upper()}")
                 st.write(f"**Short Description:** {info['current']['summary']}")
 
-            if info['history']:
-                st.warning("⚠️ Зафиксированы изменения!")
-                last_ver = info['history'][-1]
-                
-                if last_ver['title'] != info['current']['title']:
-                    st.write(f"**Старый Title:** ~~{last_ver['title']}~~ ➡️ {info['current']['title']}")
-                if last_ver['summary'] != info['current']['summary']:
-                    st.write(f"**Старый SD:** ~~{last_ver['summary']}~~ ➡️ {info['current']['summary']}")
-                
-                report_text = f"ОТЧЕТ ОБ ИЗМЕНЕНИИ ASO ДЛЯ {pkg_id} (ГЕО: {geo.upper()})\n\nБЫЛО:\n{last_ver}\n\nСТАЛО:\n{info['current']}"
-                st.download_button(
-                    label="📥 Скачать отчет для ИИ",
-                    data=report_text,
-                    file_name=f"aso_report_{pkg_id}_{geo}.txt",
-                    key=f"dl_{key}"
-                )
+                if info['history']:
+                    st.warning("⚠️ Зафиксированы изменения!")
+                    last_ver = info['history'][-1]
+                    
+                    if last_ver['title'] != info['current']['title']:
+                        st.write(f"**Старый Title:** ~~{last_ver['title']}~~ ➡️ {info['current']['title']}")
+                    if last_ver['summary'] != info['current']['summary']:
+                        st.write(f"**Старый SD:** ~~{last_ver['summary']}~~ ➡️ {info['current']['summary']}")
+                    
+                    report_text = f"ОТЧЕТ ОБ ИЗМЕНЕНИИ ASO ДЛЯ {pkg_id} (ГЕО: {geo.upper()})\n\nБЫЛО:\n{last_ver}\n\nСТАЛО:\n{info['current']}"
+                    st.download_button(
+                        label="📥 Скачать отчет для ИИ",
+                        data=report_text,
+                        file_name=f"aso_report_{pkg_id}_{geo}.txt",
+                        key=f"dl_{key}"
+                    )
