@@ -1,14 +1,15 @@
 import streamlit as st
 import json
 import pandas as pd
+import requests
 from google_play_scraper import app
 from datetime import datetime
 from streamlit_gsheets import GSheetsConnection
 
-# Настройка страницы
+# 1. Настройка страницы
 st.set_page_config(page_title="ASO Monitor PRO", layout="wide")
 
-# Подключение к Google Sheets
+# 2. Подключение к Google Sheets
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
     DB_AVAILABLE = True
@@ -16,8 +17,20 @@ except Exception as e:
     st.error(f"Ошибка инициализации подключения: {e}")
     DB_AVAILABLE = False
 
-# --- ФУНКЦИИ ДАННЫХ ---
+# --- ФУНКЦИЯ ТЕЛЕГРАМ-БОТА ---
+def send_telegram_msg(text):
+    token = st.secrets.get("TELEGRAM_TOKEN")
+    chat_id = st.secrets.get("TELEGRAM_CHAT_ID")
+    if token and chat_id:
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        try:
+            requests.post(url, data={"chat_id": chat_id, "text": text})
+        except Exception as e:
+            st.sidebar.error(f"Сбой отправки в TG: {e}")
+    else:
+        st.sidebar.warning("TG ключи не найдены в настройках Secrets!")
 
+# --- ФУНКЦИИ БАЗЫ ДАННЫХ ---
 def load_data():
     if not DB_AVAILABLE:
         return {}
@@ -69,13 +82,50 @@ def save_data(data):
         st.error(f"❌ ОШИБКА ЗАПИСИ В ТАБЛИЦУ: {e}")
         return False
 
-# --- ИНТЕРФЕЙС ---
-
-st.title("🚀 ASO Monitor 24/7")
+# --- ОСНОВНОЙ ИНТЕРФЕЙС ---
+st.title("🚀 ASO Monitor + Telegram Bot")
 
 db = load_data()
 
+# Кнопка "Проверить всё сразу"
+if st.button("🔍 Проверить все приложения сейчас"):
+    with st.spinner("Идет массовая проверка в Google Play..."):
+        updates_count = 0
+        for pkg_id, info in db.items():
+            try:
+                new_m = app(pkg_id, lang='en', country=info['geo'])
+                if new_m['title'] != info['current']['title'] or new_m['summary'] != info['current']['summary']:
+                    
+                    # Отправляем в телеграм
+                    msg = f"⚠️ ИЗМЕНЕНИЕ ASO!\nПриложение: {new_m['title']}\nID: {pkg_id}\n\nБыло: {info['current']['title']}\nСтало: {new_m['title']}"
+                    send_telegram_msg(msg)
+                    
+                    # Сохраняем в историю
+                    info['history'].append(info['current'])
+                    info['current'] = {
+                        "title": new_m['title'], 
+                        "summary": new_m['summary'], 
+                        "description": new_m['description']
+                    }
+                    updates_count += 1
+            except:
+                pass
+        
+        if updates_count > 0:
+            save_data(db)
+            st.success(f"Проверка завершена! Найдено и отправлено в TG изменений: {updates_count}")
+            st.rerun()
+        else:
+            st.info("Проверка завершена. Изменений у конкурентов не обнаружено.")
+
+# Боковое меню
 with st.sidebar:
+    st.header("Настройки бота")
+    if st.button("🔔 Тест Telegram-бота"):
+        send_telegram_msg("🚀 Привет! Это тестовое сообщение прямо с сайта ASO Monitor. Связь установлена!")
+        st.success("Тестовое сообщение отправлено!")
+
+    st.markdown("---")
     st.header("➕ Добавить приложение")
     new_id = st.text_input("Package ID", placeholder="com.whatsapp")
     new_geo = st.text_input("ГЕО (страна)", value="us")
@@ -101,6 +151,7 @@ with st.sidebar:
         else:
             st.warning("Введите Package ID!")
 
+# Список приложений
 if not db:
     st.info("База данных пуста. Добавьте первое приложение слева.")
 else:
@@ -110,19 +161,19 @@ else:
             col1, col2 = st.columns([1, 2])
             
             with col1:
-                # ВОТ ОНА — РАБОЧАЯ КНОПКА ПРОВЕРКИ
                 if st.button("Проверить обновления", key=f"check_{pkg_id}"):
                     with st.spinner("Сверяю с Google Play..."):
                         try:
                             new_m = app(pkg_id, lang='en', country=info['geo'])
                             
-                            # Сравниваем Тайтл и Краткое описание
                             if (new_m['title'] != info['current']['title'] or 
                                 new_m['summary'] != info['current']['summary']):
                                 
-                                # Если есть изменения — переносим текущее в историю
+                                # Отправляем уведомление
+                                msg = f"⚠️ ИЗМЕНЕНИЕ ASO!\nПриложение: {new_m['title']}\nID: {pkg_id}\n\nБыло: {info['current']['title']}\nСтало: {new_m['title']}"
+                                send_telegram_msg(msg)
+
                                 info['history'].append(info['current'])
-                                # Обновляем текущее на новое
                                 info['current'] = {
                                     "title": new_m['title'],
                                     "summary": new_m['summary'],
@@ -141,7 +192,6 @@ else:
                 st.write(f"**ГЕО мониторинга:** {info['geo']}")
                 st.write(f"**Short Description:** {info['current']['summary']}")
 
-            # Если в истории что-то есть, показываем предупреждение и кнопку отчета
             if info['history']:
                 st.warning("⚠️ Зафиксированы изменения!")
                 last_ver = info['history'][-1]
