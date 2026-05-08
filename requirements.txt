@@ -2,3 +2,4 @@ streamlit
 google-play-scraper
 pandas
 st-gsheets-connection
+setuptools
