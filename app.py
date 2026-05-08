@@ -1,3 +1,19 @@
+import os
+import subprocess
+import sys
+
+# ФУНКЦИЯ ПРИНУДИТЕЛЬНОЙ УСТАНОВКИ
+def install_package(package):
+    subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+
+# Пытаемся импортировать, если нет — устанавливаем
+try:
+    from st_gsheets_connection import GSheetsConnection
+except ImportError:
+    with st.spinner("Устанавливаю критические обновления базы данных... Подождите 30 секунд."):
+        install_package("st-gsheets-connection")
+    from st_gsheets_connection import GSheetsConnection
+
 import streamlit as st
 import json
 import pandas as pd
@@ -7,17 +23,15 @@ from datetime import datetime
 # Настройка страницы
 st.set_page_config(page_title="ASO Monitor PRO", layout="wide")
 
-# БЕЗОПАСНЫЙ ИМПОРТ
+# Подключение к Google Sheets
 try:
-    from st_gsheets_connection import GSheetsConnection
     conn = st.connection("gsheets", type=GSheetsConnection)
     DB_AVAILABLE = True
 except Exception as e:
-    st.error(f"Библиотека для таблиц еще загружается сервером... Ошибка: {e}")
-    st.info("Пожалуйста, подождите 1 минуту и обновите страницу.")
+    st.error(f"Ошибка подключения: {e}")
     DB_AVAILABLE = False
 
-# --- ФУНКЦИИ ---
+# --- ФУНКЦИИ БАЗЫ ---
 
 def load_data():
     if not DB_AVAILABLE: return {}
@@ -48,7 +62,7 @@ def save_data(data):
         conn.update(data=pd.DataFrame(rows))
         st.toast("✅ Синхронизировано с Google Sheets")
     except Exception as e:
-        st.error(f"Ошибка сохранения: {e}")
+        st.error(f"Ошибка записи в таблицу: {e}")
 
 # --- ИНТЕРФЕЙС ---
 
@@ -66,12 +80,13 @@ with st.sidebar:
             meta = {"title": res['title'], "summary": res['summary'], "description": res['description']}
             db[new_id] = {"geo": new_geo, "current": meta, "history": []}
             save_data(db)
+            st.success("Добавлено!")
             st.rerun()
         except: st.error("Приложение не найдено")
 
 for pkg_id, info in db.items():
     with st.expander(f"📦 {info['current']['title']} ({pkg_id})"):
-        if st.button("Проверить", key=pkg_id):
+        if st.button("Проверить обновления", key=pkg_id):
             try:
                 new_m = app(pkg_id, lang='en', country=info['geo'])
                 if new_m['title'] != info['current']['title'] or new_m['summary'] != info['current']['summary']:
