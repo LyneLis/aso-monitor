@@ -1,0 +1,26 @@
+name: ASO Daily Check
+
+on:
+  schedule:
+    - cron: '0 10 * * *' # Запуск каждый день в 10:00 утра (по UTC)
+  workflow_dispatch: # Позволяет запускать вручную кнопкой
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+      - name: Set up Python
+        uses: ambassadors/setup-python@v2
+        with:
+          python-version: '3.9'
+      - name: Install dependencies
+        run: |
+          pip install google-play-scraper pandas requests
+      - name: Run script
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GSHEET_URL: "https://docs.google.com/spreadsheets/d/1jHKbRYt0hJg29RWLIXZ2fL3et_hgzvkhCSxVtTjKV9g/edit?gid=0#gid=0"
+        run: python bot.py
