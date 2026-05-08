@@ -27,8 +27,6 @@ def send_telegram_msg(text):
             requests.post(url, data={"chat_id": chat_id, "text": text})
         except Exception as e:
             st.sidebar.error(f"Сбой отправки в TG: {e}")
-    else:
-        st.sidebar.warning("TG ключи не найдены в настройках Secrets!")
 
 # --- ФУНКЦИИ БАЗЫ ДАННЫХ ---
 def load_data():
@@ -43,9 +41,9 @@ def load_data():
         for _, row in df.iterrows():
             if pd.isna(row['package_id']):
                 continue
-            pkg_id = str(row['package_id'])
+            pkg_id = str(row['package_id']).strip()
             data[pkg_id] = {
-                "geo": str(row['geo']),
+                "geo": str(row['geo']).strip().lower(), # Очистка ГЕО
                 "current": {
                     "title": str(row['title']),
                     "summary": str(row['summary']),
@@ -83,7 +81,7 @@ def save_data(data):
         return False
 
 # --- ОСНОВНОЙ ИНТЕРФЕЙС ---
-st.title("🚀 ASO Monitor + Telegram Bot")
+st.title("🚀 ASO Monitor PRO")
 
 db = load_data()
 
@@ -93,11 +91,16 @@ if st.button("🔍 Проверить все приложения сейчас")
         updates_count = 0
         for pkg_id, info in db.items():
             try:
-                new_m = app(pkg_id, lang='en', country=info['geo'])
+                # Двойная проверка ГЕО: сначала пытаемся с 'en', затем без
+                try:
+                    new_m = app(pkg_id, lang='en', country=info['geo'])
+                except:
+                    new_m = app(pkg_id, country=info['geo'])
+
                 if new_m['title'] != info['current']['title'] or new_m['summary'] != info['current']['summary']:
                     
                     # Отправляем в телеграм
-                    msg = f"⚠️ ИЗМЕНЕНИЕ ASO!\nПриложение: {new_m['title']}\nID: {pkg_id}\n\nБыло: {info['current']['title']}\nСтало: {new_m['title']}"
+                    msg = f"⚠️ ИЗМЕНЕНИЕ ASO!\nГЕО: {info['geo'].upper()}\nПриложение: {new_m['title']}\nID: {pkg_id}\n\nБыло: {info['current']['title']}\nСтало: {new_m['title']}"
                     send_telegram_msg(msg)
                     
                     # Сохраняем в историю
@@ -121,14 +124,19 @@ if st.button("🔍 Проверить все приложения сейчас")
 # Боковое меню
 with st.sidebar:
     st.header("➕ Добавить приложение")
-    new_id = st.text_input("Package ID", placeholder="com.whatsapp")
-    new_geo = st.text_input("ГЕО (страна)", value="us")
+    new_id = st.text_input("Package ID", placeholder="com.whatsapp").strip()
+    new_geo = st.text_input("ГЕО (страна)", value="us").strip().lower()
     
     if st.button("Добавить в мониторинг"):
-        if new_id:
+        if new_id and len(new_geo) == 2:
             with st.spinner("Запрос к Google Play..."):
                 try:
-                    res = app(new_id, lang='en', country=new_geo)
+                    # Двойная проверка ГЕО при добавлении
+                    try:
+                        res = app(new_id, lang='en', country=new_geo)
+                    except:
+                        res = app(new_id, country=new_geo)
+
                     meta = {
                         "title": res['title'],
                         "summary": res['summary'],
@@ -141,9 +149,9 @@ with st.sidebar:
                         st.balloons()
                         st.rerun()
                 except Exception as e:
-                    st.error(f"Ошибка при добавлении: {e}")
+                    st.error(f"Приложение не найдено в ГЕО '{new_geo}'. Убедитесь, что ID и код страны верны.")
         else:
-            st.warning("Введите Package ID!")
+            st.warning("Введите Package ID и корректный 2-буквенный код страны (например: us, ru, de)!")
 
 # Список приложений
 if not db:
@@ -151,20 +159,24 @@ if not db:
 else:
     st.write(f"В мониторинге приложений: {len(db)}")
     for pkg_id, info in db.items():
-        with st.expander(f"📦 {info['current']['title']} ({pkg_id})"):
+        with st.expander(f"📦 [{info['geo'].upper()}] {info['current']['title']} ({pkg_id})"):
             col1, col2 = st.columns([1, 2])
             
             with col1:
                 if st.button("Проверить обновления", key=f"check_{pkg_id}"):
                     with st.spinner("Сверяю с Google Play..."):
                         try:
-                            new_m = app(pkg_id, lang='en', country=info['geo'])
+                            # Двойная проверка ГЕО для конкретного приложения
+                            try:
+                                new_m = app(pkg_id, lang='en', country=info['geo'])
+                            except:
+                                new_m = app(pkg_id, country=info['geo'])
                             
                             if (new_m['title'] != info['current']['title'] or 
                                 new_m['summary'] != info['current']['summary']):
                                 
                                 # Отправляем уведомление
-                                msg = f"⚠️ ИЗМЕНЕНИЕ ASO!\nПриложение: {new_m['title']}\nID: {pkg_id}\n\nБыло: {info['current']['title']}\nСтало: {new_m['title']}"
+                                msg = f"⚠️ ИЗМЕНЕНИЕ ASO!\nГЕО: {info['geo'].upper()}\nПриложение: {new_m['title']}\nID: {pkg_id}\n\nБыло: {info['current']['title']}\nСтало: {new_m['title']}"
                                 send_telegram_msg(msg)
 
                                 info['history'].append(info['current'])
@@ -183,7 +195,7 @@ else:
                             st.error(f"Не удалось связаться с Google Play: {e}")
             
             with col2:
-                st.write(f"**ГЕО мониторинга:** {info['geo']}")
+                st.write(f"**ГЕО мониторинга:** {info['geo'].upper()}")
                 st.write(f"**Short Description:** {info['current']['summary']}")
 
             if info['history']:
@@ -195,7 +207,7 @@ else:
                 if last_ver['summary'] != info['current']['summary']:
                     st.write(f"**Старый SD:** ~~{last_ver['summary']}~~ ➡️ {info['current']['summary']}")
                 
-                report_text = f"ОТЧЕТ ОБ ИЗМЕНЕНИИ ASO ДЛЯ {pkg_id}\n\nБЫЛО:\n{last_ver}\n\nСТАЛО:\n{info['current']}"
+                report_text = f"ОТЧЕТ ОБ ИЗМЕНЕНИИ ASO ДЛЯ {pkg_id} (ГЕО: {info['geo'].upper()})\n\nБЫЛО:\n{last_ver}\n\nСТАЛО:\n{info['current']}"
                 st.download_button(
                     label="📥 Скачать отчет для ИИ",
                     data=report_text,
