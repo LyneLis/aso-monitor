@@ -120,12 +120,6 @@ if st.button("🔍 Проверить все приложения сейчас")
 
 # Боковое меню
 with st.sidebar:
-    st.header("Настройки бота")
-    if st.button("🔔 Тест Telegram-бота"):
-        send_telegram_msg("🚀 Привет! Это тестовое сообщение прямо с сайта ASO Monitor. Связь установлена!")
-        st.success("Тестовое сообщение отправлено!")
-
-    st.markdown("---")
     st.header("➕ Добавить приложение")
     new_id = st.text_input("Package ID", placeholder="com.whatsapp")
     new_geo = st.text_input("ГЕО (страна)", value="us")
