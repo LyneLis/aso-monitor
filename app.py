@@ -16,7 +16,6 @@ except Exception as e:
     DB_AVAILABLE = False
 
 def get_minsk_time():
-    # Минск находится в UTC+3
     return (datetime.utcnow() + timedelta(hours=3)).strftime("%d.%m.%Y %H:%M:%S")
 
 def get_lang(geo_code):
@@ -46,15 +45,12 @@ def load_data():
             geo = str(row['geo']).strip().lower()
             unique_key = f"{pkg_id}_{geo}"
             
-            # Безопасно загружаем логи проверок, если колонка уже существует
             check_log = []
             if 'check_log' in df.columns:
                 log_val = row['check_log']
                 if isinstance(log_val, str) and log_val.strip() != "":
-                    try:
-                        check_log = json.loads(log_val)
-                    except:
-                        pass
+                    try: check_log = json.loads(log_val)
+                    except: pass
             
             data[unique_key] = {
                 "package_id": pkg_id,
@@ -108,8 +104,15 @@ if st.button("🔍 Проверить все приложения сейчас")
                 
                 log_entry = {"time": get_minsk_time(), "status": "🟢 Без изменений"}
 
-                if new_m['title'] != info['current']['title'] or new_m['summary'] != info['current']['summary']:
-                    msg = f"⚠️ ИЗМЕНЕНИЕ ASO!\nГЕО: {geo.upper()}\nПриложение: {new_m['title']}\nID: {pkg_id}\n\nБыло: {info['current']['title']}\nСтало: {new_m['title']}"
+                # Проверяем ВСЕ поля
+                changed_fields = []
+                if new_m['title'] != info['current']['title']: changed_fields.append("Title")
+                if new_m['summary'] != info['current']['summary']: changed_fields.append("Short Description")
+                if new_m['description'] != info['current']['description']: changed_fields.append("Full Description")
+
+                if changed_fields:
+                    fields_str = ", ".join(changed_fields)
+                    msg = f"⚠️ ИЗМЕНЕНИЕ ASO!\nГЕО: {geo.upper()}\nПриложение: {new_m['title']}\nID: {pkg_id}\n\nЧто изменилось: {fields_str}"
                     send_telegram_msg(msg)
                     
                     info['history'].append(info['current'])
@@ -118,10 +121,9 @@ if st.button("🔍 Проверить все приложения сейчас")
                         "summary": new_m['summary'], 
                         "description": new_m['description']
                     }
-                    log_entry["status"] = "🔴 Найдено изменение!"
+                    log_entry["status"] = f"🔴 Найдено изменение ({fields_str})!"
                     updates_count += 1
                 
-                # Добавляем в лог и храним только последние 15 записей
                 info.setdefault('check_log', []).append(log_entry)
                 info['check_log'] = info['check_log'][-15:]
                 
@@ -131,9 +133,9 @@ if st.button("🔍 Проверить все приложения сейчас")
         
         save_data(db)
         if updates_count > 0:
-            st.success(f"Проверка завершена! Найдено и отправлено в TG изменений: {updates_count}")
+            st.success(f"Проверка завершена! Найдено изменений: {updates_count}")
         else:
-            st.info("Проверка завершена. Изменений у конкурентов не обнаружено.")
+            st.info("Проверка завершена. Изменений не обнаружено.")
         st.rerun()
 
 # Боковое меню
@@ -146,7 +148,7 @@ with st.sidebar:
         if new_id and len(new_geo) == 2:
             unique_key = f"{new_id}_{new_geo}"
             if unique_key in db:
-                st.warning(f"Приложение {new_id} для ГЕО {new_geo.upper()} уже есть в списке!")
+                st.warning(f"Приложение уже есть в списке!")
             else:
                 with st.spinner("Запрос к Google Play..."):
                     try:
@@ -159,7 +161,6 @@ with st.sidebar:
                             "description": res['description']
                         }
                         current_db = db.copy()
-                        # При добавлении сразу пишем первый лог
                         first_log = [{"time": get_minsk_time(), "status": "🆕 Добавлено в трекер"}]
                         current_db[unique_key] = {"package_id": new_id, "geo": new_geo, "current": meta, "history": [], "check_log": first_log}
                         
@@ -167,13 +168,13 @@ with st.sidebar:
                             st.balloons()
                             st.rerun()
                     except Exception as e:
-                        st.error(f"Приложение не найдено в ГЕО '{new_geo}'. Убедитесь, что ID и код страны верны.")
+                        st.error("Приложение не найдено. Проверьте ID и ГЕО.")
         else:
-            st.warning("Введите Package ID и корректный 2-буквенный код страны (например: us, ru, de)!")
+            st.warning("Введите Package ID и 2-буквенный код страны!")
 
 # Список приложений
 if not db:
-    st.info("База данных пуста. Добавьте первое приложение слева.")
+    st.info("База данных пуста. Добавьте приложение слева.")
 else:
     st.write(f"В мониторинге приложений: {len(db)}")
     for key, info in db.items():
@@ -195,10 +196,15 @@ else:
                                 
                                 log_entry = {"time": get_minsk_time(), "status": "🟢 Без изменений"}
                                 
-                                if (new_m['title'] != info['current']['title'] or 
-                                    new_m['summary'] != info['current']['summary']):
-                                    
-                                    msg = f"⚠️ ИЗМЕНЕНИЕ ASO!\nГЕО: {geo.upper()}\nПриложение: {new_m['title']}\nID: {pkg_id}\n\nБыло: {info['current']['title']}\nСтало: {new_m['title']}"
+                                # Проверка всех полей
+                                changed_fields = []
+                                if new_m['title'] != info['current']['title']: changed_fields.append("Title")
+                                if new_m['summary'] != info['current']['summary']: changed_fields.append("Short Description")
+                                if new_m['description'] != info['current']['description']: changed_fields.append("Full Description")
+                                
+                                if changed_fields:
+                                    fields_str = ", ".join(changed_fields)
+                                    msg = f"⚠️ ИЗМЕНЕНИЕ ASO!\nГЕО: {geo.upper()}\nПриложение: {new_m['title']}\nID: {pkg_id}\n\nЧто изменилось: {fields_str}"
                                     send_telegram_msg(msg)
 
                                     info['history'].append(info['current'])
@@ -207,7 +213,7 @@ else:
                                         "summary": new_m['summary'],
                                         "description": new_m['description']
                                     }
-                                    log_entry["status"] = "🔴 Найдено изменение!"
+                                    log_entry["status"] = f"🔴 Найдено изменение ({fields_str})!"
                                     st.balloons()
                                 else:
                                     st.info("Изменений не найдено.")
@@ -218,7 +224,7 @@ else:
                                 st.rerun()
                                 
                             except Exception as e:
-                                st.error(f"Не удалось связаться с Google Play: {e}")
+                                st.error(f"Ошибка связи: {e}")
                 
                 with col2:
                     st.write(f"**ГЕО мониторинга:** {geo.upper()}")
@@ -232,20 +238,20 @@ else:
                         st.write(f"**Старый Title:** ~~{last_ver['title']}~~ ➡️ {info['current']['title']}")
                     if last_ver['summary'] != info['current']['summary']:
                         st.write(f"**Старый SD:** ~~{last_ver['summary']}~~ ➡️ {info['current']['summary']}")
+                    if last_ver['description'] != info['current']['description']:
+                        st.write(f"**Full Description:** 🔄 Обновлено (подробности в отчете ниже)")
                     
                     report_text = f"ОТЧЕТ ОБ ИЗМЕНЕНИИ ASO ДЛЯ {pkg_id} (ГЕО: {geo.upper()})\n\nБЫЛО:\n{last_ver}\n\nСТАЛО:\n{info['current']}"
                     st.download_button(
-                        label="📥 Скачать отчет для ИИ",
+                        label="📥 Скачать отчет",
                         data=report_text,
                         file_name=f"aso_report_{pkg_id}_{geo}.txt",
                         key=f"dl_{key}"
                     )
                 
-                # --- БЛОК ИСТОРИИ ПРОВЕРОК ---
                 st.markdown("---")
-                st.markdown("🕒 **История проверок (Время Минское):**")
+                st.markdown("🕒 **История проверок:**")
                 if info.get('check_log'):
-                    # Показываем новые сверху
                     for log in reversed(info['check_log']):
                         st.text(f"[{log['time']}] {log['status']}")
                 else:
