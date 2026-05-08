@@ -141,7 +141,8 @@ with st.sidebar:
             if u_key in db: 
                 st.warning("Уже отслеживается!")
             else:
-                with st.status(f"Загрузка {new_geo}...", expanded=False) as status:
+                success = False
+                with st.spinner(f"Загрузка {new_geo}..."):
                     try:
                         res = fetch_gp_data(new_id, new_geo)
                         db[u_key] = {
@@ -150,10 +151,12 @@ with st.sidebar:
                             "history": [], "check_log": [{"time": get_minsk_time(), "status": "🆕 Добавлено"}]
                         }
                         if save_data(db):
-                            status.update(label="✅ Готово!", state="complete", expanded=False)
-                            st.rerun()
-                    except:
-                        status.update(label="❌ Ошибка: Приложение не найдено.", state="error", expanded=True)
+                            success = True
+                    except Exception:
+                        st.error("Ошибка: Приложение не найдено в этой локали.")
+                
+                if success:
+                    st.rerun()
         else:
             st.warning("Заполните ID и выберите локаль!")
 
