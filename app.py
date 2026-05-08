@@ -6,10 +6,8 @@ from google_play_scraper import app
 from datetime import datetime
 from streamlit_gsheets import GSheetsConnection
 
-# 1. Настройка страницы
 st.set_page_config(page_title="ASO Monitor PRO", layout="wide")
 
-# 2. Подключение к Google Sheets
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
     DB_AVAILABLE = True
@@ -17,7 +15,11 @@ except Exception as e:
     st.error(f"Ошибка инициализации подключения: {e}")
     DB_AVAILABLE = False
 
-# --- ФУНКЦИЯ ТЕЛЕГРАМ-БОТА ---
+# Определение языка по ГЕО
+def get_lang(geo_code):
+    mapping = {'us': 'en', 'uk': 'en', 'gb': 'en', 'au': 'en', 'ca': 'en'}
+    return mapping.get(geo_code, geo_code)
+
 def send_telegram_msg(text):
     token = st.secrets.get("TELEGRAM_TOKEN")
     chat_id = st.secrets.get("TELEGRAM_CHAT_ID")
@@ -28,22 +30,17 @@ def send_telegram_msg(text):
         except Exception as e:
             st.sidebar.error(f"Сбой отправки в TG: {e}")
 
-# --- ФУНКЦИИ БАЗЫ ДАННЫХ ---
 def load_data():
-    if not DB_AVAILABLE:
-        return {}
+    if not DB_AVAILABLE: return {}
     try:
         df = conn.read(ttl=0)
-        if df is None or df.empty:
-            return {}
-        
+        if df is None or df.empty: return {}
         data = {}
         for _, row in df.iterrows():
-            if pd.isna(row['package_id']):
-                continue
+            if pd.isna(row['package_id']): continue
             pkg_id = str(row['package_id']).strip()
             data[pkg_id] = {
-                "geo": str(row['geo']).strip().lower(), # Очистка ГЕО
+                "geo": str(row['geo']).strip().lower(),
                 "current": {
                     "title": str(row['title']),
                     "summary": str(row['summary']),
@@ -56,10 +53,7 @@ def load_data():
         return {}
 
 def save_data(data):
-    if not DB_AVAILABLE:
-        st.error("Ошибка: Подключение к базе данных не установлено.")
-        return False
-        
+    if not DB_AVAILABLE: return False
     try:
         rows = []
         for pkg_id, info in data.items():
@@ -71,18 +65,14 @@ def save_data(data):
                 "description": info['current']['description'],
                 "history": json.dumps(info['history'], ensure_ascii=False)
             })
-        
-        df_to_save = pd.DataFrame(rows)
-        conn.update(data=df_to_save)
+        conn.update(data=pd.DataFrame(rows))
         st.toast("✅ Данные успешно сохранены в Google Sheets!")
         return True
     except Exception as e:
         st.error(f"❌ ОШИБКА ЗАПИСИ В ТАБЛИЦУ: {e}")
         return False
 
-# --- ОСНОВНОЙ ИНТЕРФЕЙС ---
 st.title("🚀 ASO Monitor PRO")
-
 db = load_data()
 
 # Кнопка "Проверить всё сразу"
@@ -91,19 +81,13 @@ if st.button("🔍 Проверить все приложения сейчас")
         updates_count = 0
         for pkg_id, info in db.items():
             try:
-                # Двойная проверка ГЕО: сначала пытаемся с 'en', затем без
-                try:
-                    new_m = app(pkg_id, lang='en', country=info['geo'])
-                except:
-                    new_m = app(pkg_id, country=info['geo'])
+                target_lang = get_lang(info['geo'])
+                new_m = app(pkg_id, lang=target_lang, country=info['geo'])
 
                 if new_m['title'] != info['current']['title'] or new_m['summary'] != info['current']['summary']:
-                    
-                    # Отправляем в телеграм
                     msg = f"⚠️ ИЗМЕНЕНИЕ ASO!\nГЕО: {info['geo'].upper()}\nПриложение: {new_m['title']}\nID: {pkg_id}\n\nБыло: {info['current']['title']}\nСтало: {new_m['title']}"
                     send_telegram_msg(msg)
                     
-                    # Сохраняем в историю
                     info['history'].append(info['current'])
                     info['current'] = {
                         "title": new_m['title'], 
@@ -131,11 +115,8 @@ with st.sidebar:
         if new_id and len(new_geo) == 2:
             with st.spinner("Запрос к Google Play..."):
                 try:
-                    # Двойная проверка ГЕО при добавлении
-                    try:
-                        res = app(new_id, lang='en', country=new_geo)
-                    except:
-                        res = app(new_id, country=new_geo)
+                    target_lang = get_lang(new_geo)
+                    res = app(new_id, lang=target_lang, country=new_geo)
 
                     meta = {
                         "title": res['title'],
@@ -166,16 +147,12 @@ else:
                 if st.button("Проверить обновления", key=f"check_{pkg_id}"):
                     with st.spinner("Сверяю с Google Play..."):
                         try:
-                            # Двойная проверка ГЕО для конкретного приложения
-                            try:
-                                new_m = app(pkg_id, lang='en', country=info['geo'])
-                            except:
-                                new_m = app(pkg_id, country=info['geo'])
+                            target_lang = get_lang(info['geo'])
+                            new_m = app(pkg_id, lang=target_lang, country=info['geo'])
                             
                             if (new_m['title'] != info['current']['title'] or 
                                 new_m['summary'] != info['current']['summary']):
                                 
-                                # Отправляем уведомление
                                 msg = f"⚠️ ИЗМЕНЕНИЕ ASO!\nГЕО: {info['geo'].upper()}\nПриложение: {new_m['title']}\nID: {pkg_id}\n\nБыло: {info['current']['title']}\nСтало: {new_m['title']}"
                                 send_telegram_msg(msg)
 
