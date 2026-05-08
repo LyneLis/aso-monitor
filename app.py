@@ -6,31 +6,65 @@ from google_play_scraper import app
 from datetime import datetime, timedelta
 from streamlit_gsheets import GSheetsConnection
 
+# 1. Настройка страницы
 st.set_page_config(page_title="ASO Monitor PRO", layout="wide")
+
+# Словарь локалей Google Play Console (Локаль: Название для списка)
+# Сюда добавлены все основные комбинации
+GP_LOCALES = {
+    "af": "Afrikaans", "am": "Amharic", "ar": "Arabic", "az-AZ": "Azerbaijani (Azerbaijan)",
+    "be": "Belarusian", "bg": "Bulgarian", "bn-BD": "Bengali (Bangladesh)", "ca": "Catalan",
+    "cs-CZ": "Czech (Czech Republic)", "da-DK": "Danish (Denmark)", "de-DE": "German (Germany)",
+    "el-GR": "Greek (Greece)", "en-AU": "English (Australia)", "en-CA": "English (Canada)",
+    "en-GB": "English (United Kingdom)", "en-IN": "English (India)", "en-SG": "English (Singapore)",
+    "en-US": "English (United States)", "en-ZA": "English (South Africa)", "es-419": "Spanish (Latin America)",
+    "es-ES": "Spanish (Spain)", "es-US": "Spanish (United States)", "et": "Estonian", "fa": "Persian",
+    "fi-FI": "Finnish (Finland)", "fil": "Filipino", "fr-CA": "French (Canada)", "fr-FR": "French (France)",
+    "gu-IN": "Gujarati (India)", "hi-IN": "Hindi (India)", "hr": "Croatian", "hu-HU": "Hungarian (Hungary)",
+    "hy-AM": "Armenian (Armenia)", "id": "Indonesian", "is-IS": "Icelandic (Iceland)", "it-IT": "Italian (Italy)",
+    "iw-IL": "Hebrew (Israel)", "ja-JP": "Japanese (Japan)", "ka-GE": "Georgian (Georgia)",
+    "kk": "Kazakh", "km-KH": "Khmer (Cambodia)", "kn-IN": "Kannada (India)", "ko-KR": "Korean (South Korea)",
+    "ky-KG": "Kyrgyz", "lo-LA": "Lao (Laos)", "lt": "Lithuanian", "lv": "Latvian", "mk-MK": "Macedonian (North Macedonia)",
+    "ml-IN": "Malayalam (India)", "mn-MN": "Mongolian (Mongolia)", "mr-IN": "Marathi (India)",
+    "ms": "Malay", "ms-MY": "Malay (Malaysia)", "my-MM": "Burmese (Myanmar)", "ne-NP": "Nepali (Nepal)",
+    "nl-NL": "Dutch (Netherlands)", "no-NO": "Norwegian (Norway)", "pa-IN": "Punjabi (India)",
+    "pl-PL": "Polish (Poland)", "pt-BR": "Portuguese (Brazil)", "pt-PT": "Portuguese (Portugal)",
+    "ro": "Romanian", "ru-RU": "Russian (Russia)", "si-LK": "Sinhala (Sri Lanka)", "sk": "Slovak",
+    "sl": "Slovenian", "sq": "Albanian", "sr": "Serbian", "sv-SE": "Swedish (Sweden)", "sw": "Swahili",
+    "ta-IN": "Tamil (India)", "te-IN": "Telugu (India)", "th-TH": "Thai (Thailand)", "tr-TR": "Turkish (Turkey)",
+    "uk": "Ukrainian", "ur-PK": "Urdu (Pakistan)", "uz-UZ": "Uzbek (Uzbekistan)", "vi-VN": "Vietnamese (Vietnam)",
+    "zh-CN": "Chinese (Simplified)", "zh-HK": "Chinese (Hong Kong)", "zh-TW": "Chinese (Traditional)", "zu": "Zulu"
+}
 
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
     DB_AVAILABLE = True
 except Exception as e:
-    st.error(f"Ошибка инициализации подключения: {e}")
+    st.error(f"Ошибка подключения: {e}")
     DB_AVAILABLE = False
 
 def get_minsk_time():
     return (datetime.utcnow() + timedelta(hours=3)).strftime("%d.%m.%Y %H:%M:%S")
 
-def get_lang(geo_code):
-    mapping = {'us': 'en', 'uk': 'en', 'gb': 'en', 'au': 'en', 'ca': 'en'}
-    return mapping.get(geo_code, geo_code)
+# Функция парсинга локали (например, ru-RU -> lang='ru', country='ru')
+def fetch_gp_data(pkg_id, locale):
+    if "-" in locale:
+        lang_code, country_code = locale.split("-")
+    else:
+        lang_code, country_code = locale, locale
+    
+    # Исправление для иврита (в Google Play 'iw', в scraper 'he' иногда глючит)
+    if lang_code == "iw": lang_code = "iw"
+    
+    return app(pkg_id, lang=lang_code.lower(), country=country_code.lower())
 
 def send_telegram_msg(text):
     token = st.secrets.get("TELEGRAM_TOKEN")
     chat_id = st.secrets.get("TELEGRAM_CHAT_ID")
     if token and chat_id:
         url = f"https://api.telegram.org/bot{token}/sendMessage"
-        try:
-            requests.post(url, data={"chat_id": chat_id, "text": text})
-        except Exception as e:
-            st.sidebar.error(f"Сбой отправки в TG: {e}")
+        try: requests.post(url, data={"chat_id": chat_id, "text": text})
+        except: pass
 
 def load_data():
     if not DB_AVAILABLE: return {}
@@ -39,33 +73,23 @@ def load_data():
         if df is None or df.empty: return {}
         data = {}
         for _, row in df.iterrows():
-            if pd.isna(row['package_id']): continue
-            
-            pkg_id = str(row['package_id']).strip()
-            geo = str(row['geo']).strip().lower()
+            if pd.isna(row['package_id']) or pd.isna(row['geo']): continue
+            pkg_id, geo = str(row['package_id']).strip(), str(row['geo']).strip()
             unique_key = f"{pkg_id}_{geo}"
             
             check_log = []
-            if 'check_log' in df.columns:
-                log_val = row['check_log']
-                if isinstance(log_val, str) and log_val.strip() != "":
-                    try: check_log = json.loads(log_val)
-                    except: pass
+            if 'check_log' in df.columns and not pd.isna(row['check_log']):
+                try: check_log = json.loads(str(row['check_log']))
+                except: pass
             
             data[unique_key] = {
-                "package_id": pkg_id,
-                "geo": geo,
-                "current": {
-                    "title": str(row['title']),
-                    "summary": str(row['summary']),
-                    "description": str(row['description'])
-                },
-                "history": json.loads(row['history']) if isinstance(row['history'], str) and row['history'] != "" else [],
+                "package_id": pkg_id, "geo": geo,
+                "current": {"title": str(row['title']), "summary": str(row['summary']), "description": str(row['description'])},
+                "history": json.loads(row['history']) if 'history' in df.columns and isinstance(row['history'], str) else [],
                 "check_log": check_log
             }
         return data
-    except Exception as e:
-        return {}
+    except: return {}
 
 def save_data(data):
     if not DB_AVAILABLE: return False
@@ -73,192 +97,118 @@ def save_data(data):
         rows = []
         for key, info in data.items():
             rows.append({
-                "package_id": info['package_id'],
-                "geo": info['geo'],
-                "title": info['current']['title'],
-                "summary": info['current']['summary'],
-                "description": info['current']['description'],
+                "package_id": info['package_id'], "geo": info['geo'],
+                "title": info['current']['title'], "summary": info['current']['summary'], "description": info['current']['description'],
                 "history": json.dumps(info['history'], ensure_ascii=False),
                 "check_log": json.dumps(info.get('check_log', []), ensure_ascii=False)
             })
         conn.update(data=pd.DataFrame(rows))
-        st.toast("✅ Данные успешно сохранены в Google Sheets!")
         return True
-    except Exception as e:
-        st.error(f"❌ ОШИБКА ЗАПИСИ В ТАБЛИЦУ: {e}")
-        return False
+    except: return False
 
 st.title("🚀 ASO Monitor PRO")
 db = load_data()
 
-# Кнопка "Проверить всё сразу"
+# Массовая проверка
 if st.button("🔍 Проверить все приложения сейчас"):
-    with st.spinner("Идет массовая проверка в Google Play..."):
+    with st.spinner("Проверка обновлений..."):
         updates_count = 0
         for key, info in db.items():
             try:
-                pkg_id = info['package_id']
-                geo = info['geo']
-                target_lang = get_lang(geo)
-                new_m = app(pkg_id, lang=target_lang, country=geo)
-                
-                log_entry = {"time": get_minsk_time(), "status": "🟢 Без изменений"}
+                new_m = fetch_gp_data(info['package_id'], info['geo'])
+                log_entry = {"time": get_minsk_time(), "status": "🟢 Ок"}
+                changed = []
+                if new_m['title'] != info['current']['title']: changed.append("Title")
+                if new_m['summary'] != info['current']['summary']: changed.append("SD")
+                if new_m['description'] != info['current']['description']: changed.append("FD")
 
-                # Проверяем ВСЕ поля
-                changed_fields = []
-                if new_m['title'] != info['current']['title']: changed_fields.append("Title")
-                if new_m['summary'] != info['current']['summary']: changed_fields.append("Short Description")
-                if new_m['description'] != info['current']['description']: changed_fields.append("Full Description")
-
-                if changed_fields:
-                    fields_str = ", ".join(changed_fields)
-                    msg = f"⚠️ ИЗМЕНЕНИЕ ASO!\nГЕО: {geo.upper()}\nПриложение: {new_m['title']}\nID: {pkg_id}\n\nЧто изменилось: {fields_str}"
-                    send_telegram_msg(msg)
-                    
+                if changed:
+                    send_telegram_msg(f"⚠️ ИЗМЕНЕНИЕ [{info['geo']}]\n{new_m['title']}\nИзменено: {', '.join(changed)}")
                     info['history'].append(info['current'])
-                    info['current'] = {
-                        "title": new_m['title'], 
-                        "summary": new_m['summary'], 
-                        "description": new_m['description']
-                    }
-                    log_entry["status"] = f"🔴 Найдено изменение ({fields_str})!"
+                    info['current'] = {"title": new_m['title'], "summary": new_m['summary'], "description": new_m['description']}
+                    log_entry["status"] = f"🔴 Изменение: {', '.join(changed)}"
                     updates_count += 1
-                
                 info.setdefault('check_log', []).append(log_entry)
                 info['check_log'] = info['check_log'][-15:]
-                
-            except:
-                info.setdefault('check_log', []).append({"time": get_minsk_time(), "status": "⚪ Ошибка связи со стором"})
-                info['check_log'] = info['check_log'][-15:]
-        
+            except: pass
         save_data(db)
-        if updates_count > 0:
-            st.success(f"Проверка завершена! Найдено изменений: {updates_count}")
-        else:
-            st.info("Проверка завершена. Изменений не обнаружено.")
         st.rerun()
 
-# Боковое меню
+# Боковая панель: Добавление
 with st.sidebar:
     st.header("➕ Добавить приложение")
-    new_id = st.text_input("Package ID", placeholder="com.whatsapp").strip()
-    new_geo = st.text_input("ГЕО (страна)", value="us").strip().lower()
+    new_id = st.text_input("Package ID").strip()
     
-    if st.button("Добавить в мониторинг"):
-        if new_id and len(new_geo) == 2:
-            unique_key = f"{new_id}_{new_geo}"
-            if unique_key in db:
-                st.warning(f"Приложение уже есть в списке!")
-            else:
-                with st.spinner("Запрос к Google Play..."):
-                    try:
-                        target_lang = get_lang(new_geo)
-                        res = app(new_id, lang=target_lang, country=new_geo)
+    # Выпадающий список с поиском
+    selected_locale_name = st.selectbox(
+        "Выберите локаль (Google Play Console)",
+        options=list(GP_LOCALES.values()),
+        index=list(GP_LOCALES.keys()).index("en-US") # По умолчанию US
+    )
+    # Получаем код из названия
+    new_geo = [k for k, v in GP_LOCALES.items() if v == selected_locale_name][0]
 
-                        meta = {
-                            "title": res['title'],
-                            "summary": res['summary'],
-                            "description": res['description']
+    if st.button("Добавить в мониторинг"):
+        if new_id:
+            u_key = f"{new_id}_{new_geo}"
+            if u_key in db:
+                st.warning("Эта локаль уже отслеживается!")
+            else:
+                with st.spinner(f"Загрузка локали {new_geo}..."):
+                    try:
+                        res = fetch_gp_data(new_id, new_geo)
+                        db[u_key] = {
+                            "package_id": new_id, "geo": new_geo,
+                            "current": {"title": res['title'], "summary": res['summary'], "description": res['description']},
+                            "history": [], "check_log": [{"time": get_minsk_time(), "status": "🆕 Добавлено"}]
                         }
-                        current_db = db.copy()
-                        first_log = [{"time": get_minsk_time(), "status": "🆕 Добавлено в трекер"}]
-                        current_db[unique_key] = {"package_id": new_id, "geo": new_geo, "current": meta, "history": [], "check_log": first_log}
-                        
-                        if save_data(current_db):
-                            st.balloons()
-                            st.rerun()
-                    except Exception as e:
-                        st.error("Приложение не найдено. Проверьте ID и ГЕО.")
-        else:
-            st.warning("Введите Package ID и 2-буквенный код страны!")
+                        save_data(db)
+                        st.rerun()
+                    except: st.error("Приложение не найдено для этой локали.")
 
 # Список приложений
-if not db:
-    st.info("База данных пуста. Добавьте приложение слева.")
-else:
-    st.write(f"В мониторинге приложений: {len(db)}")
-    for key, info in db.items():
-        pkg_id = info['package_id']
-        geo = info['geo']
-        
-        col_expander, col_delete = st.columns([11, 1])
-        
-        with col_expander:
-            with st.expander(f"📦 [{geo.upper()}] {info['current']['title']} ({pkg_id})"):
-                col1, col2 = st.columns([1, 2])
-                
-                with col1:
-                    if st.button("Проверить обновления", key=f"check_{key}"):
-                        with st.spinner("Сверяю с Google Play..."):
-                            try:
-                                target_lang = get_lang(geo)
-                                new_m = app(pkg_id, lang=target_lang, country=geo)
-                                
-                                log_entry = {"time": get_minsk_time(), "status": "🟢 Без изменений"}
-                                
-                                # Проверка всех полей
-                                changed_fields = []
-                                if new_m['title'] != info['current']['title']: changed_fields.append("Title")
-                                if new_m['summary'] != info['current']['summary']: changed_fields.append("Short Description")
-                                if new_m['description'] != info['current']['description']: changed_fields.append("Full Description")
-                                
-                                if changed_fields:
-                                    fields_str = ", ".join(changed_fields)
-                                    msg = f"⚠️ ИЗМЕНЕНИЕ ASO!\nГЕО: {geo.upper()}\nПриложение: {new_m['title']}\nID: {pkg_id}\n\nЧто изменилось: {fields_str}"
-                                    send_telegram_msg(msg)
-
-                                    info['history'].append(info['current'])
-                                    info['current'] = {
-                                        "title": new_m['title'],
-                                        "summary": new_m['summary'],
-                                        "description": new_m['description']
-                                    }
-                                    log_entry["status"] = f"🔴 Найдено изменение ({fields_str})!"
-                                    st.balloons()
-                                else:
-                                    st.info("Изменений не найдено.")
-                                
-                                info.setdefault('check_log', []).append(log_entry)
-                                info['check_log'] = info['check_log'][-15:]
-                                save_data(db)
-                                st.rerun()
-                                
-                            except Exception as e:
-                                st.error(f"Ошибка связи: {e}")
-                
-                with col2:
-                    st.write(f"**ГЕО мониторинга:** {geo.upper()}")
-                    st.write(f"**Short Description:** {info['current']['summary']}")
-
-                if info['history']:
-                    st.warning("⚠️ Зафиксированы старые изменения!")
-                    last_ver = info['history'][-1]
-                    
-                    if last_ver['title'] != info['current']['title']:
-                        st.write(f"**Старый Title:** ~~{last_ver['title']}~~ ➡️ {info['current']['title']}")
-                    if last_ver['summary'] != info['current']['summary']:
-                        st.write(f"**Старый SD:** ~~{last_ver['summary']}~~ ➡️ {info['current']['summary']}")
-                    if last_ver['description'] != info['current']['description']:
-                        st.write(f"**Full Description:** 🔄 Обновлено (подробности в отчете ниже)")
-                    
-                    report_text = f"ОТЧЕТ ОБ ИЗМЕНЕНИИ ASO ДЛЯ {pkg_id} (ГЕО: {geo.upper()})\n\nБЫЛО:\n{last_ver}\n\nСТАЛО:\n{info['current']}"
-                    st.download_button(
-                        label="📥 Скачать отчет",
-                        data=report_text,
-                        file_name=f"aso_report_{pkg_id}_{geo}.txt",
-                        key=f"dl_{key}"
-                    )
-                
-                st.markdown("---")
-                st.markdown("🕒 **История проверок:**")
-                if info.get('check_log'):
-                    for log in reversed(info['check_log']):
-                        st.text(f"[{log['time']}] {log['status']}")
-                else:
-                    st.text("Проверок еще не было.")
-                    
-        with col_delete:
-            if st.button("🗑️", key=f"del_{key}", help="Удалить приложение"):
-                del db[key]
-                save_data(db)
-                st.rerun()
+for key, info in db.items():
+    col_exp, col_del = st.columns([11, 1])
+    with col_exp:
+        with st.expander(f"📦 [{info['geo']}] {info['current']['title']}"):
+            if st.button("Проверить", key=f"ch_{key}"):
+                with st.spinner("Сверка..."):
+                    try:
+                        new_m = fetch_gp_data(info['package_id'], info['geo'])
+                        changed = []
+                        if new_m['title'] != info['current']['title']: changed.append("Title")
+                        if new_m['summary'] != info['current']['summary']: changed.append("SD")
+                        if new_m['description'] != info['current']['description']: changed.append("FD")
+                        
+                        log_entry = {"time": get_minsk_time(), "status": "🟢 Ок"}
+                        if changed:
+                            info['history'].append(info['current'])
+                            info['current'] = {"title": new_m['title'], "summary": new_m['summary'], "description": new_m['description']}
+                            log_entry["status"] = f"🔴 Изменение: {', '.join(changed)}"
+                            st.success("Обновлено!")
+                        else: st.info("Без изменений.")
+                        info.setdefault('check_log', []).append(log_entry)
+                        info['check_log'] = info['check_log'][-15:]
+                        save_data(db)
+                        st.rerun()
+                    except: st.error("Ошибка связи")
+            
+            st.write(f"**ID:** {info['package_id']}")
+            st.write(f"**Локаль:** {GP_LOCALES.get(info['geo'], info['geo'])}")
+            
+            if info['history']:
+                st.warning("⚠️ Есть старые версии!")
+                st.download_button(label="📥 Скачать отчет", data=f"БЫЛО:\n{info['history'][-1]}\n\nСТАЛО:\n{info['current']}", 
+                                   file_name=f"aso_{info['package_id']}_{info['geo']}.txt", key=f"dl_{key}")
+            
+            st.markdown("---")
+            st.markdown("🕒 **История проверок:**")
+            if info.get('check_log'):
+                for log in reversed(info['check_log']):
+                    st.text(f"[{log['time']}] {log['status']}")
+            
+    with col_del:
+        if st.button("🗑️", key=f"del_{key}"):
+            del db[key]
+            save_data(db)
+            st.rerun()
