@@ -47,7 +47,7 @@ def load_data():
 def save_data(data):
     if not DB_AVAILABLE:
         st.error("Ошибка: Подключение к базе данных не установлено.")
-        st.stop() # Замораживаем экран
+        return False
         
     try:
         rows = []
@@ -63,13 +63,11 @@ def save_data(data):
         
         df_to_save = pd.DataFrame(rows)
         conn.update(data=df_to_save)
-        st.success("✅ Данные успешно сохранены в Google Sheets!")
+        st.toast("✅ Данные успешно сохранены в Google Sheets!")
         return True
     except Exception as e:
-        # ВЫВОДИМ ОШИБКУ И ОСТАНАВЛИВАЕМ САЙТ
         st.error(f"❌ ОШИБКА ЗАПИСИ В ТАБЛИЦУ: {e}")
-        st.info("Сайт заморожен. Пожалуйста, скопируй текст ошибки выше и отправь его.")
-        st.stop() # Замораживаем экран
+        return False
 
 # --- ИНТЕРФЕЙС ---
 
@@ -79,7 +77,7 @@ db = load_data()
 
 with st.sidebar:
     st.header("➕ Добавить приложение")
-    new_id = st.text_input("Package ID", placeholder="com.openmygame.games...")
+    new_id = st.text_input("Package ID", placeholder="com.whatsapp")
     new_geo = st.text_input("ГЕО (страна)", value="us")
     
     if st.button("Добавить в мониторинг"):
@@ -99,10 +97,7 @@ with st.sidebar:
                         st.balloons()
                         st.rerun()
                 except Exception as e:
-                    # ВЫВОДИМ ОШИБКУ И ОСТАНАВЛИВАЕМ САЙТ
-                    st.error(f"❌ ОШИБКА ПАРСИНГА GOOGLE PLAY: {e}")
-                    st.info("Сайт заморожен. Скопируй ошибку и пришли мне.")
-                    st.stop() # Замораживаем экран
+                    st.error(f"Ошибка при добавлении: {e}")
         else:
             st.warning("Введите Package ID!")
 
@@ -112,5 +107,54 @@ else:
     st.write(f"В мониторинге приложений: {len(db)}")
     for pkg_id, info in db.items():
         with st.expander(f"📦 {info['current']['title']} ({pkg_id})"):
-            if st.button("Проверить обновления", key=f"check_{pkg_id}"):
-                st.info("Кнопка проверки пока в режиме ожидания")
+            col1, col2 = st.columns([1, 2])
+            
+            with col1:
+                # ВОТ ОНА — РАБОЧАЯ КНОПКА ПРОВЕРКИ
+                if st.button("Проверить обновления", key=f"check_{pkg_id}"):
+                    with st.spinner("Сверяю с Google Play..."):
+                        try:
+                            new_m = app(pkg_id, lang='en', country=info['geo'])
+                            
+                            # Сравниваем Тайтл и Краткое описание
+                            if (new_m['title'] != info['current']['title'] or 
+                                new_m['summary'] != info['current']['summary']):
+                                
+                                # Если есть изменения — переносим текущее в историю
+                                info['history'].append(info['current'])
+                                # Обновляем текущее на новое
+                                info['current'] = {
+                                    "title": new_m['title'],
+                                    "summary": new_m['summary'],
+                                    "description": new_m['description']
+                                }
+                                
+                                if save_data(db):
+                                    st.balloons()
+                                    st.rerun()
+                            else:
+                                st.info("Изменений не найдено.")
+                        except Exception as e:
+                            st.error(f"Не удалось связаться с Google Play: {e}")
+            
+            with col2:
+                st.write(f"**ГЕО мониторинга:** {info['geo']}")
+                st.write(f"**Short Description:** {info['current']['summary']}")
+
+            # Если в истории что-то есть, показываем предупреждение и кнопку отчета
+            if info['history']:
+                st.warning("⚠️ Зафиксированы изменения!")
+                last_ver = info['history'][-1]
+                
+                if last_ver['title'] != info['current']['title']:
+                    st.write(f"**Старый Title:** ~~{last_ver['title']}~~ ➡️ {info['current']['title']}")
+                if last_ver['summary'] != info['current']['summary']:
+                    st.write(f"**Старый SD:** ~~{last_ver['summary']}~~ ➡️ {info['current']['summary']}")
+                
+                report_text = f"ОТЧЕТ ОБ ИЗМЕНЕНИИ ASO ДЛЯ {pkg_id}\n\nБЫЛО:\n{last_ver}\n\nСТАЛО:\n{info['current']}"
+                st.download_button(
+                    label="📥 Скачать отчет для ИИ",
+                    data=report_text,
+                    file_name=f"aso_report_{pkg_id}.txt",
+                    key=f"dl_{pkg_id}"
+                )
