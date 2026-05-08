@@ -15,7 +15,6 @@ except Exception as e:
     st.error(f"Ошибка инициализации подключения: {e}")
     DB_AVAILABLE = False
 
-# Определение языка по ГЕО
 def get_lang(geo_code):
     mapping = {'us': 'en', 'uk': 'en', 'gb': 'en', 'au': 'en', 'ca': 'en'}
     return mapping.get(geo_code, geo_code)
@@ -38,9 +37,16 @@ def load_data():
         data = {}
         for _, row in df.iterrows():
             if pd.isna(row['package_id']): continue
+            
             pkg_id = str(row['package_id']).strip()
-            data[pkg_id] = {
-                "geo": str(row['geo']).strip().lower(),
+            geo = str(row['geo']).strip().lower()
+            
+            # Уникальный ключ теперь состоит из ID и ГЕО
+            unique_key = f"{pkg_id}_{geo}"
+            
+            data[unique_key] = {
+                "package_id": pkg_id,
+                "geo": geo,
                 "current": {
                     "title": str(row['title']),
                     "summary": str(row['summary']),
@@ -56,9 +62,9 @@ def save_data(data):
     if not DB_AVAILABLE: return False
     try:
         rows = []
-        for pkg_id, info in data.items():
+        for key, info in data.items():
             rows.append({
-                "package_id": pkg_id,
+                "package_id": info['package_id'],
                 "geo": info['geo'],
                 "title": info['current']['title'],
                 "summary": info['current']['summary'],
@@ -79,13 +85,15 @@ db = load_data()
 if st.button("🔍 Проверить все приложения сейчас"):
     with st.spinner("Идет массовая проверка в Google Play..."):
         updates_count = 0
-        for pkg_id, info in db.items():
+        for key, info in db.items():
             try:
-                target_lang = get_lang(info['geo'])
-                new_m = app(pkg_id, lang=target_lang, country=info['geo'])
+                pkg_id = info['package_id']
+                geo = info['geo']
+                target_lang = get_lang(geo)
+                new_m = app(pkg_id, lang=target_lang, country=geo)
 
                 if new_m['title'] != info['current']['title'] or new_m['summary'] != info['current']['summary']:
-                    msg = f"⚠️ ИЗМЕНЕНИЕ ASO!\nГЕО: {info['geo'].upper()}\nПриложение: {new_m['title']}\nID: {pkg_id}\n\nБыло: {info['current']['title']}\nСтало: {new_m['title']}"
+                    msg = f"⚠️ ИЗМЕНЕНИЕ ASO!\nГЕО: {geo.upper()}\nПриложение: {new_m['title']}\nID: {pkg_id}\n\nБыло: {info['current']['title']}\nСтало: {new_m['title']}"
                     send_telegram_msg(msg)
                     
                     info['history'].append(info['current'])
@@ -113,24 +121,28 @@ with st.sidebar:
     
     if st.button("Добавить в мониторинг"):
         if new_id and len(new_geo) == 2:
-            with st.spinner("Запрос к Google Play..."):
-                try:
-                    target_lang = get_lang(new_geo)
-                    res = app(new_id, lang=target_lang, country=new_geo)
+            unique_key = f"{new_id}_{new_geo}"
+            if unique_key in db:
+                st.warning(f"Приложение {new_id} для ГЕО {new_geo.upper()} уже есть в списке!")
+            else:
+                with st.spinner("Запрос к Google Play..."):
+                    try:
+                        target_lang = get_lang(new_geo)
+                        res = app(new_id, lang=target_lang, country=new_geo)
 
-                    meta = {
-                        "title": res['title'],
-                        "summary": res['summary'],
-                        "description": res['description']
-                    }
-                    current_db = db.copy()
-                    current_db[new_id] = {"geo": new_geo, "current": meta, "history": []}
-                    
-                    if save_data(current_db):
-                        st.balloons()
-                        st.rerun()
-                except Exception as e:
-                    st.error(f"Приложение не найдено в ГЕО '{new_geo}'. Убедитесь, что ID и код страны верны.")
+                        meta = {
+                            "title": res['title'],
+                            "summary": res['summary'],
+                            "description": res['description']
+                        }
+                        current_db = db.copy()
+                        current_db[unique_key] = {"package_id": new_id, "geo": new_geo, "current": meta, "history": []}
+                        
+                        if save_data(current_db):
+                            st.balloons()
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"Приложение не найдено в ГЕО '{new_geo}'. Убедитесь, что ID и код страны верны.")
         else:
             st.warning("Введите Package ID и корректный 2-буквенный код страны (например: us, ru, de)!")
 
@@ -139,40 +151,51 @@ if not db:
     st.info("База данных пуста. Добавьте первое приложение слева.")
 else:
     st.write(f"В мониторинге приложений: {len(db)}")
-    for pkg_id, info in db.items():
-        with st.expander(f"📦 [{info['geo'].upper()}] {info['current']['title']} ({pkg_id})"):
+    for key, info in db.items():
+        pkg_id = info['package_id']
+        geo = info['geo']
+        with st.expander(f"📦 [{geo.upper()}] {info['current']['title']} ({pkg_id})"):
             col1, col2 = st.columns([1, 2])
             
             with col1:
-                if st.button("Проверить обновления", key=f"check_{pkg_id}"):
-                    with st.spinner("Сверяю с Google Play..."):
-                        try:
-                            target_lang = get_lang(info['geo'])
-                            new_m = app(pkg_id, lang=target_lang, country=info['geo'])
-                            
-                            if (new_m['title'] != info['current']['title'] or 
-                                new_m['summary'] != info['current']['summary']):
+                # Кнопки в ряд
+                btn_col1, btn_col2 = st.columns([1, 1])
+                with btn_col1:
+                    if st.button("🔄 Проверить", key=f"check_{key}"):
+                        with st.spinner("Сверяю с Google Play..."):
+                            try:
+                                target_lang = get_lang(geo)
+                                new_m = app(pkg_id, lang=target_lang, country=geo)
                                 
-                                msg = f"⚠️ ИЗМЕНЕНИЕ ASO!\nГЕО: {info['geo'].upper()}\nПриложение: {new_m['title']}\nID: {pkg_id}\n\nБыло: {info['current']['title']}\nСтало: {new_m['title']}"
-                                send_telegram_msg(msg)
+                                if (new_m['title'] != info['current']['title'] or 
+                                    new_m['summary'] != info['current']['summary']):
+                                    
+                                    msg = f"⚠️ ИЗМЕНЕНИЕ ASO!\nГЕО: {geo.upper()}\nПриложение: {new_m['title']}\nID: {pkg_id}\n\nБыло: {info['current']['title']}\nСтало: {new_m['title']}"
+                                    send_telegram_msg(msg)
 
-                                info['history'].append(info['current'])
-                                info['current'] = {
-                                    "title": new_m['title'],
-                                    "summary": new_m['summary'],
-                                    "description": new_m['description']
-                                }
-                                
-                                if save_data(db):
-                                    st.balloons()
-                                    st.rerun()
-                            else:
-                                st.info("Изменений не найдено.")
-                        except Exception as e:
-                            st.error(f"Не удалось связаться с Google Play: {e}")
+                                    info['history'].append(info['current'])
+                                    info['current'] = {
+                                        "title": new_m['title'],
+                                        "summary": new_m['summary'],
+                                        "description": new_m['description']
+                                    }
+                                    
+                                    if save_data(db):
+                                        st.balloons()
+                                        st.rerun()
+                                else:
+                                    st.info("Изменений не найдено.")
+                            except Exception as e:
+                                st.error(f"Не удалось связаться с Google Play: {e}")
+                
+                with btn_col2:
+                    if st.button("🗑️ Удалить", key=f"del_{key}"):
+                        del db[key]
+                        save_data(db)
+                        st.rerun()
             
             with col2:
-                st.write(f"**ГЕО мониторинга:** {info['geo'].upper()}")
+                st.write(f"**ГЕО мониторинга:** {geo.upper()}")
                 st.write(f"**Short Description:** {info['current']['summary']}")
 
             if info['history']:
@@ -184,10 +207,10 @@ else:
                 if last_ver['summary'] != info['current']['summary']:
                     st.write(f"**Старый SD:** ~~{last_ver['summary']}~~ ➡️ {info['current']['summary']}")
                 
-                report_text = f"ОТЧЕТ ОБ ИЗМЕНЕНИИ ASO ДЛЯ {pkg_id} (ГЕО: {info['geo'].upper()})\n\nБЫЛО:\n{last_ver}\n\nСТАЛО:\n{info['current']}"
+                report_text = f"ОТЧЕТ ОБ ИЗМЕНЕНИИ ASO ДЛЯ {pkg_id} (ГЕО: {geo.upper()})\n\nБЫЛО:\n{last_ver}\n\nСТАЛО:\n{info['current']}"
                 st.download_button(
                     label="📥 Скачать отчет для ИИ",
                     data=report_text,
-                    file_name=f"aso_report_{pkg_id}.txt",
-                    key=f"dl_{pkg_id}"
+                    file_name=f"aso_report_{pkg_id}_{geo}.txt",
+                    key=f"dl_{key}"
                 )
