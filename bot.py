@@ -45,13 +45,22 @@ def analyze_changes_with_ai(old_t, new_t, old_s, new_s, old_d, new_d):
     if not GEMINI_API_KEY:
         return "❌ Ключ Gemini API не найден. Анализ не выполнен."
     
-    try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        full_prompt = f"{ASO_PROMPT}\n\n--- БЫЛО ---\nTitle: {old_t}\nShort Description: {old_s}\nFull Description: {old_d}\n\n--- СТАЛО ---\nTitle: {new_t}\nShort Description: {new_s}\nFull Description: {new_d}"
-        response = model.generate_content(full_prompt)
-        return response.text
-    except Exception as e:
-        return f"❌ Ошибка ИИ-анализа: {e}"
+    full_prompt = f"{ASO_PROMPT}\n\n--- БЫЛО ---\nTitle: {old_t}\nShort Description: {old_s}\nFull Description: {old_d}\n\n--- СТАЛО ---\nTitle: {new_t}\nShort Description: {new_s}\nFull Description: {new_d}"
+    
+    # Список моделей для перебора в случае ошибки 404
+    models_to_try = ['gemini-1.5-flash-latest', 'gemini-1.5-pro-latest', 'gemini-pro']
+    last_error = ""
+
+    for model_name in models_to_try:
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(full_prompt)
+            return response.text
+        except Exception as e:
+            last_error = str(e)
+            continue # Пробуем следующую модель
+            
+    return f"❌ Ошибка ИИ-анализа (модели недоступны): {last_error}"
 
 def check_apps():
     print(f"--- СТАРТ ПРОВЕРКИ С АВТОЗАПИСЬЮ И ИИ-АНАЛИЗОМ ({get_minsk_time()}) ---")
@@ -85,16 +94,14 @@ def check_apps():
             user_stats[c_id] = {'checked': 0, 'updated': 0}
         user_stats[c_id]['checked'] += 1
 
-        # ОБНОВЛЕННАЯ ЛОГИКА ПАРСИНГА ЛОКАЛЕЙ
         if full_geo == "es-419":
             l_code, c_code = "es-419", "MX"
         elif "-" in full_geo:
-            l_code = full_geo # Передаем язык целиком
+            l_code = full_geo
             c_code = full_geo.split("-")[1].upper()
         else:
             l_code, c_code = full_geo.lower(), full_geo.upper()
 
-        # Читаем существующий check_log, чтобы не затереть его
         log_str = str(row.get('check_log', '[]')).strip()
         if not log_str or log_str == 'nan': log_str = '[]'
         try:
@@ -122,14 +129,11 @@ def check_apps():
                 print(f"    ⚠️ Изменение в {p_id}. Отправляю отчет и генерирую ИИ-анализ...")
                 user_stats[c_id]['updated'] += 1
                 
-                # Добавляем лог с изменениями
                 current_log.append({"time": get_minsk_time(), "status": f"🔴 Авто: Изменение ({', '.join(changes)})"})
                 
-                # 1. Отправляем короткое сообщение
                 msg = f"🔔 АВТО-ИЗМЕНЕНИЕ! [{full_geo.upper()}]\n📦 {p_id}\n\nПоля: {', '.join(changes)}\nНазвание: {new_t}"
                 requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": c_id, "text": msg})
                 
-                # 2. Формируем файл с БЫЛО/СТАЛО
                 report_content = (
                     f"ОТЧЕТ ОБ ИЗМЕНЕНИЯХ (АВТО)\nДата: {get_minsk_time()}\nПриложение: {p_id}\nЛокаль: {full_geo}\n"
                     f"{'='*30}\n\n"
@@ -148,12 +152,10 @@ def check_apps():
                                  files={"document": f})
                 os.remove(file_path)
 
-                # 3. ГЕНЕРИРУЕМ И ОТПРАВЛЯЕМ ИИ-АНАЛИЗ
                 ai_analysis = analyze_changes_with_ai(old_t, new_t, old_s, new_s, old_d, new_d)
                 ai_msg = f"🤖 **Анализ стратегии от ИИ:**\n\n{ai_analysis}"
                 requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": c_id, "text": ai_msg, "parse_mode": "Markdown"})
 
-                # 4. ЗАПИСЫВАЕМ НОВЫЕ ДАННЫЕ
                 if "title" in col_map: worksheet.update_cell(row_number, col_map["title"], new_t)
                 if "summary" in col_map: worksheet.update_cell(row_number, col_map["summary"], new_s)
                 if "description" in col_map: worksheet.update_cell(row_number, col_map["description"], new_d)
@@ -162,9 +164,7 @@ def check_apps():
                 print(f"    ✅ {p_id}: Без изменений.")
                 current_log.append({"time": get_minsk_time(), "status": "🟢 Авто: Без изменений"})
 
-            # Обновляем колонку check_log в таблице
             if "check_log" in col_map:
-                # Оставляем только 5 последних записей
                 current_log = current_log[-5:]
                 worksheet.update_cell(row_number, col_map["check_log"], json.dumps(current_log, ensure_ascii=False))
 
@@ -175,7 +175,6 @@ def check_apps():
                 current_log = current_log[-5:]
                 worksheet.update_cell(row_number, col_map["check_log"], json.dumps(current_log, ensure_ascii=False))
 
-    # Финальный отчет отправляется ТОЛЬКО если были обновления (updated > 0)
     for c_id, stats in user_stats.items():
         if stats['checked'] > 0 and stats['updated'] > 0:
             report = (f"⚙️ Системный авто-отчет GitHub\n⏰ {get_minsk_time()}\n"
