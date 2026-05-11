@@ -1,27 +1,21 @@
-name: ASO_REBOOT_MONITOR
+name: ASO_MONITOR_AUTORUN
 
 on:
-  workflow_dispatch:
   schedule:
-    # Проверка каждые 5 минут
     - cron: '*/5 * * * *'
+  workflow_dispatch:
 
 jobs:
-  run_script:
+  check:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.9'
-
-      - name: Install Libraries
+      - name: Install
         run: pip install google-play-scraper gspread requests pandas
-
-      - name: Run Monitor
+      - name: Run
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
