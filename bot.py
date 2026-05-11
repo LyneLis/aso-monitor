@@ -5,7 +5,6 @@ import json
 import requests
 from datetime import datetime, timedelta
 
-# Настройки
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 service_account_info = json.loads(os.environ.get("GCP_SERVICE_ACCOUNT_JSON"))
 SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1jHKbRYt0hJg29RWLIXZ2fL3et_hgzvkhCSxVtTjKV9g/edit"
@@ -14,14 +13,13 @@ def get_minsk_time():
     return (datetime.utcnow() + timedelta(hours=3)).strftime("%d.%m.%Y %H:%M:%S")
 
 def check_apps():
-    print(f"--- СТАРТ ПРОВЕРКИ С АВТОЗАПИСЬЮ ({get_minsk_time()}) ---")
+    print(f"--- СТАРТ ПРОВЕРКИ С АВТОЗАПИСЬЮ ЛОГОВ ({get_minsk_time()}) ---")
     
     try:
         gc = gspread.service_account_from_dict(service_account_info)
         sh = gc.open_by_url(SPREADSHEET_URL)
-        worksheet = sh.get_worksheet(0) # Лист apps должен быть первым
+        worksheet = sh.get_worksheet(0) 
         
-        # Получаем заголовки, чтобы знать номера колонок
         headers = worksheet.row_values(1)
         col_map = {name: i+1 for i, name in enumerate(headers)}
         
@@ -34,7 +32,6 @@ def check_apps():
     user_stats = {}
 
     for i, row in enumerate(data):
-        # Номер строки в самой таблице (i=0 это 2-я строка таблицы)
         row_number = i + 2
         
         p_id = str(row.get('package_id', '')).strip()
@@ -47,12 +44,19 @@ def check_apps():
             user_stats[c_id] = {'checked': 0, 'updated': 0}
         user_stats[c_id]['checked'] += 1
 
-        # Парсинг локали
         if "-" in full_geo:
             parts = full_geo.split("-")
             l_code, c_code = parts[0].lower(), parts[1].upper()
         else:
             l_code, c_code = full_geo.lower(), full_geo.upper()
+
+        # Читаем существующий check_log, чтобы не затереть его
+        log_str = str(row.get('check_log', '[]')).strip()
+        if not log_str or log_str == 'nan': log_str = '[]'
+        try:
+            current_log = json.loads(log_str)
+        except:
+            current_log = []
 
         try:
             res = app(p_id, lang=l_code, country=c_code)
@@ -74,45 +78,59 @@ def check_apps():
                 print(f"    ⚠️ Изменение в {p_id}. Отправляю отчет и обновляю таблицу...")
                 user_stats[c_id]['updated'] += 1
                 
-                # 1. Отправляем сообщение
-                msg = f"🔔 ИЗМЕНЕНИЕ! [{full_geo.upper()}]\n📦 {p_id}\n\nПоля: {', '.join(changes)}\n\nНазвание: {new_t}"
+                # Добавляем лог с изменениями
+                current_log.append({"time": get_minsk_time(), "status": f"🔴 Авто: Изменение ({', '.join(changes)})"})
+                
+                # 1. Отправляем короткое сообщение
+                msg = f"🔔 АВТО-ИЗМЕНЕНИЕ! [{full_geo.upper()}]\n📦 {p_id}\n\nПоля: {', '.join(changes)}\nНазвание: {new_t}"
                 requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": c_id, "text": msg})
                 
-                # 2. Формируем и отправляем файл
+                # 2. Формируем файл с БЫЛО/СТАЛО
                 report_content = (
-                    f"ОТЧЕТ ОБ ИЗМЕНЕНИЯХ\nДата: {get_minsk_time()}\nПриложение: {p_id}\nЛокаль: {full_geo}\n"
-                    f"{'='*30}\n\n--- НОВОЕ НАЗВАНИЕ ---\n{new_t}\n\n--- НОВЫЙ SD ---\n{new_s}\n\n--- НОВЫЙ FD ---\n{new_d}\n"
+                    f"ОТЧЕТ ОБ ИЗМЕНЕНИЯХ (АВТО)\nДата: {get_minsk_time()}\nПриложение: {p_id}\nЛокаль: {full_geo}\n"
+                    f"{'='*30}\n\n"
+                    f"--- СТАРОЕ НАЗВАНИЕ ---\n{old_t}\n\n--- НОВОЕ НАЗВАНИЕ ---\n{new_t}\n\n"
+                    f"{'-'*30}\n"
+                    f"--- СТАРЫЙ SD ---\n{old_s}\n\n--- НОВЫЙ SD ---\n{new_s}\n\n"
+                    f"{'-'*30}\n"
+                    f"--- СТАРЫЙ FD ---\n{old_d}\n\n--- НОВЫЙ FD ---\n{new_d}\n"
                 )
                 file_path = f"report_{p_id}.txt"
                 with open(file_path, "w", encoding="utf-8") as f: f.write(report_content)
                 
                 with open(file_path, "rb") as f:
                     requests.post(f"https://api.telegram.org/bot{TOKEN}/sendDocument", 
-                                 data={"chat_id": c_id, "caption": f"📄 Детальный отчет: {p_id}"}, 
+                                 data={"chat_id": c_id, "caption": f"📄 Детальный авто-отчет: {p_id}"}, 
                                  files={"document": f})
                 os.remove(file_path)
 
-                # 3. ЗАПИСЫВАЕМ НОВЫЕ ДАННЫЕ В ТАБЛИЦУ (чтобы не спамить в след. раз)
-                updates = []
-                if "title" in col_map:
-                    worksheet.update_cell(row_number, col_map["title"], new_t)
-                if "summary" in col_map:
-                    worksheet.update_cell(row_number, col_map["summary"], new_s)
-                if "description" in col_map:
-                    worksheet.update_cell(row_number, col_map["description"], new_d)
+                # 3. ЗАПИСЫВАЕМ НОВЫЕ ДАННЫЕ
+                if "title" in col_map: worksheet.update_cell(row_number, col_map["title"], new_t)
+                if "summary" in col_map: worksheet.update_cell(row_number, col_map["summary"], new_s)
+                if "description" in col_map: worksheet.update_cell(row_number, col_map["description"], new_d)
                 
-                print(f"    ✅ Данные в таблице для {p_id} обновлены.")
             else:
                 print(f"    ✅ {p_id}: Без изменений.")
+                current_log.append({"time": get_minsk_time(), "status": "🟢 Авто: Без изменений"})
+
+            # Обновляем колонку check_log в таблице
+            if "check_log" in col_map:
+                # Оставляем только 5 последних записей
+                current_log = current_log[-5:]
+                worksheet.update_cell(row_number, col_map["check_log"], json.dumps(current_log, ensure_ascii=False))
 
         except Exception as e:
             print(f"    ❌ Ошибка {p_id}: {e}")
+            current_log.append({"time": get_minsk_time(), "status": f"❌ Авто: Ошибка стора"})
+            if "check_log" in col_map:
+                current_log = current_log[-5:]
+                worksheet.update_cell(row_number, col_map["check_log"], json.dumps(current_log, ensure_ascii=False))
 
-    # Финальный отчет
+    # Финальный отчет отправляется ТОЛЬКО если были обновления (updated > 0)
     for c_id, stats in user_stats.items():
-        if stats['checked'] > 0:
-            report = (f"⚙️ Статус GitHub\n⏰ {get_minsk_time()}\n"
-                      f"📦 Проверено: {stats['checked']}\n⚠️ Обновлено: {stats['updated']}")
+        if stats['checked'] > 0 and stats['updated'] > 0:
+            report = (f"⚙️ Системный авто-отчет GitHub\n⏰ {get_minsk_time()}\n"
+                      f"📦 Проверено: {stats['checked']}\n⚠️ Найдено и обновлено: {stats['updated']}")
             requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": c_id, "text": report})
 
 if __name__ == "__main__":

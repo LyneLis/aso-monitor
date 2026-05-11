@@ -130,7 +130,7 @@ if st.button("🔍 Проверить все приложения сейчас")
         for key, info in db.items():
             try:
                 new_m = fetch_gp_data(info['package_id'], info['geo'])
-                log_entry = {"time": get_minsk_time(), "status": "🟢 Без изменений"}
+                log_entry = {"time": get_minsk_time(), "status": "🟢 Ручная: Без изменений"}
                 changed = []
                 
                 old = info['current']
@@ -160,17 +160,17 @@ if st.button("🔍 Проверить все приложения сейчас")
                     
                     info['history'].append(info['current'])
                     info['current'] = {"title": new_m['title'], "summary": new_m['summary'], "description": new_m['description']}
-                    log_entry["status"] = f"🔴 Изменение: {', '.join(changed)}"
+                    log_entry["status"] = f"🔴 Ручная: Изменение ({', '.join(changed)})"
                 
                 info.setdefault('check_log', []).append(log_entry)
-                info['check_log'] = info['check_log'][-15:]
+                info['check_log'] = info['check_log'][-5:] # Оставляем 5 последних
             except: 
                 pass
         
         if updates_count > 0:
             for c_id, rep_text in user_reports.items():
                 send_telegram_file(rep_text, "manual_aso_report.txt", f"📊 Ручная проверка: найдено {updates_count} изменений.", c_id)
-            st.success(f"Проверка окончена. Найдено изменений: {updates_count}. Файлы отправлены владельцам!")
+            st.success(f"Проверка окончена. Найдено изменений: {updates_count}. Файлы отправлены пользователям!")
         else:
             st.info("Изменений не обнаружено.")
             
@@ -182,17 +182,17 @@ with st.sidebar:
     st.header("➕ Добавить приложение")
     
     # КНОПКА РЕГИСТРАЦИИ В TELEGRAM
-    st.info("Чтобы получать уведомления и появиться в списке владельцев, сначала напишите боту.")
-    st.link_button("➕ Зарегистрироваться в Telegram", "https://t.me/aso_omg_bot", use_container_width=True)
+    st.info("Чтобы получать уведомления, сначала напишите боту.")
+    st.link_button("➕ Добавить бота", "https://t.me/aso_omg_bot", use_container_width=True)
     
-    st.divider() # Линия-разделитель
+    st.divider()
     
     new_id = st.text_input("Package ID", placeholder="com.example.app").strip()
     selected_name = st.selectbox("Локаль Google Play", options=list(GP_LOCALES.values()), index=0)
     new_geo = [k for k, v in GP_LOCALES.items() if v == selected_name][0]
     
     if users_dict:
-        user_name = st.selectbox("Кто владелец?", options=["Выбрать..."] + list(users_dict.keys()))
+        user_name = st.selectbox("Пользователь", options=["Выбрать..."] + list(users_dict.keys()))
     else:
         st.warning("Пользователи не найдены.")
         user_name = "Выбрать..."
@@ -223,19 +223,19 @@ with st.sidebar:
                     st.success(f"Добавлено для: {user_name}")
                     st.rerun()
         else:
-            st.warning("Заполните ID, выберите локаль и владельца!")
+            st.warning("Заполните ID, выберите локаль и пользователя!")
 
 # 📦 СПИСОК ПРИЛОЖЕНИЙ
 for key, info in db.items():
     col_exp, col_del = st.columns([11, 1])
     with col_exp:
         owner_name = next((name for name, cid in users_dict.items() if str(cid) == str(info.get('chat_id', ''))), "Неизвестно")
-        with st.expander(f"📦 [{info['geo']}] {info['current']['title']} | Владелец: {owner_name}"):
+        with st.expander(f"📦 [{info['geo']}] {info['current']['title']} | Пользователь: {owner_name}"):
             if st.button("Проверить", key=f"ch_{key}"):
                 with st.spinner("Проверка..."):
                     try:
                         new_m = fetch_gp_data(info['package_id'], info['geo'])
-                        log_entry = {"time": get_minsk_time(), "status": "🟢 Ок"}
+                        log_entry = {"time": get_minsk_time(), "status": "🟢 Ручная: Ок"}
                         changed = []
                         if new_m['title'] != info['current']['title']: changed.append("Title")
                         if new_m['summary'] != info['current']['summary']: changed.append("SD")
@@ -245,13 +245,13 @@ for key, info in db.items():
                             send_telegram_msg(f"⚠️ ИЗМЕНЕНИЕ [{info['geo'].upper()}]\n{new_m['title']}\nИзменено: {', '.join(changed)}", info['chat_id'])
                             info['history'].append(info['current'])
                             info['current'] = {"title": new_m['title'], "summary": new_m['summary'], "description": new_m['description']}
-                            log_entry["status"] = f"🔴 Изменение: {', '.join(changed)}"
+                            log_entry["status"] = f"🔴 Ручная: Изменение ({', '.join(changed)})"
                             st.success(f"Обновлено: {', '.join(changed)}")
                         else:
                             st.info("Без изменений.")
                         
                         info.setdefault('check_log', []).append(log_entry)
-                        info['check_log'] = info['check_log'][-15:]
+                        info['check_log'] = info['check_log'][-5:] # Оставляем 5 последних
                         save_data(db)
                         st.rerun()
                     except Exception as e:
