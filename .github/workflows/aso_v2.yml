@@ -1,12 +1,14 @@
-name: ASO Daily Monitor V2
+name: ASO Auto Monitor
 
 on:
   schedule:
+    # Запуск каждые 15 минут (время по UTC!)
     - cron: '*/15 * * * *'
+  # Оставляем кнопку для ручного запуска
   workflow_dispatch:
 
 jobs:
-  build:
+  run-monitor:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
