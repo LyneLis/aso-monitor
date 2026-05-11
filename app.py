@@ -74,7 +74,6 @@ def send_telegram_file(file_content, filename, caption, chat_id):
     token = st.secrets.get("TELEGRAM_TOKEN")
     if token and chat_id:
         url = f"https://api.telegram.org/bot{token}/sendDocument"
-        # Кодируем текст в байты, чтобы Telegram правильно принял его как файл
         files = {"document": (filename, file_content.encode('utf-8'))}
         try: requests.post(url, data={"chat_id": chat_id, "caption": caption}, files=files)
         except: pass
@@ -90,7 +89,6 @@ def load_data():
             p_id, geo = str(row['package_id']).strip(), str(row['geo']).strip()
             c_id = str(row.get('chat_id', '')).strip()
             
-            # Уникальный ключ теперь включает и chat_id, чтобы разные люди могли добавить одно приложение
             u_key = f"{p_id}_{geo}_{c_id}" 
             c_log = []
             if 'check_log' in df.columns and not pd.isna(row['check_log']):
@@ -127,7 +125,7 @@ db = load_data()
 if st.button("🔍 Проверить все приложения сейчас"):
     with st.spinner("Сверка со стором..."):
         updates_count = 0
-        user_reports = {} # Собираем отчеты для каждого пользователя отдельно
+        user_reports = {} 
         
         for key, info in db.items():
             try:
@@ -169,7 +167,6 @@ if st.button("🔍 Проверить все приложения сейчас")
             except: 
                 pass
         
-        # Если были изменения - отправляем файлы каждому пользователю
         if updates_count > 0:
             for c_id, rep_text in user_reports.items():
                 send_telegram_file(rep_text, "manual_aso_report.txt", f"📊 Ручная проверка: найдено {updates_count} изменений.", c_id)
@@ -183,17 +180,24 @@ if st.button("🔍 Проверить все приложения сейчас")
 # ➕ БОКОВАЯ ПАНЕЛЬ
 with st.sidebar:
     st.header("➕ Добавить приложение")
-    new_id = st.text_input("Package ID").strip()
+    
+    # КНОПКА РЕГИСТРАЦИИ В TELEGRAM
+    st.info("Чтобы получать уведомления и появиться в списке владельцев, сначала напишите боту.")
+    st.link_button("➕ Зарегистрироваться в Telegram", "https://t.me/aso_omg_bot", use_container_width=True)
+    
+    st.divider() # Линия-разделитель
+    
+    new_id = st.text_input("Package ID", placeholder="com.example.app").strip()
     selected_name = st.selectbox("Локаль Google Play", options=list(GP_LOCALES.values()), index=0)
     new_geo = [k for k, v in GP_LOCALES.items() if v == selected_name][0]
     
     if users_dict:
         user_name = st.selectbox("Кто владелец?", options=["Выбрать..."] + list(users_dict.keys()))
     else:
-        st.warning("База пользователей пуста. Напишите боту /start!")
+        st.warning("Пользователи не найдены.")
         user_name = "Выбрать..."
 
-    if st.button("Добавить в мониторинг"):
+    if st.button("Добавить в мониторинг", type="primary", use_container_width=True):
         if new_id and new_geo != "" and user_name != "Выбрать...":
             selected_chat_id = users_dict[user_name]
             u_key = f"{new_id}_{new_geo}_{selected_chat_id}"
@@ -227,7 +231,6 @@ for key, info in db.items():
     with col_exp:
         owner_name = next((name for name, cid in users_dict.items() if str(cid) == str(info.get('chat_id', ''))), "Неизвестно")
         with st.expander(f"📦 [{info['geo']}] {info['current']['title']} | Владелец: {owner_name}"):
-            # ИНДИВИДУАЛЬНАЯ ПРОВЕРКА
             if st.button("Проверить", key=f"ch_{key}"):
                 with st.spinner("Проверка..."):
                     try:
