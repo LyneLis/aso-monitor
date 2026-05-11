@@ -3,6 +3,7 @@ import requests
 from google_play_scraper import app
 import os
 import time
+import random
 from datetime import datetime, timedelta
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
@@ -12,58 +13,63 @@ def get_minsk_time():
     return (datetime.utcnow() + timedelta(hours=3)).strftime("%H:%M:%S")
 
 def check_apps():
-    # Обход кэша Google через случайное число в ссылке
-    cache_buster = int(time.time())
-    csv_url = GS_URL.split('/edit')[0] + f"/export?format=csv&gid=0&cb={cache_buster}"
+    # Генерируем абсолютно случайный параметр для каждой попытки обхода кэша
+    rand_id = random.randint(1000, 9999)
+    csv_url = GS_URL.split('/edit')[0] + f"/export?format=csv&gid=0&cache_bust={rand_id}"
     
-    print(f"--- Старт автопроверки ({get_minsk_time()}) ---")
+    print(f"--- ЗАПУСК АВТОПРОВЕРКИ ({get_minsk_time()}) ---")
+    print(f"Использую URL: {csv_url}")
     
     try:
         df = pd.read_csv(csv_url)
-        total_apps = len(df)
+        print(f"✅ Таблица успешно загружена. Строк: {len(df)}")
     except Exception as e:
-        print(f"Ошибка загрузки CSV: {e}")
+        print(f"❌ ОШИБКА ЗАГРУЗКИ CSV: {e}")
         return
 
-    updated_count = 0
-    checked_count = 0
-    results_found = []
-
-    for _, row in df.iterrows():
+    user_stats = {}
+    
+    for i, row in df.iterrows():
         p_id = str(row.get('package_id', '')).strip()
         if not p_id or p_id == 'nan': continue
         
         geo = str(row.get('geo', 'us')).strip()
         c_id = str(row.get('chat_id', '')).strip()
-        checked_count += 1
+        
+        if c_id not in user_stats:
+            user_stats[c_id] = {'checked': 0, 'updated': 0}
+        
+        user_stats[c_id]['checked'] += 1
         
         try:
+            print(f"[{i+1}] Проверяю {p_id} ({geo})...")
             res = app(p_id, lang=geo, country=geo)
+            
+            # ВНИМАНИЕ: Смотрим логи здесь!
             old_title = str(row.get('title', '')).strip()
             new_title = str(res['title']).strip()
             
+            print(f"    В таблице: '{old_title}'")
+            print(f"    В сторе:   '{new_title}'")
+            
             if new_title != old_title:
-                updated_count += 1
+                print(f"    ⚠️ ЕСТЬ ИЗМЕНЕНИЕ!")
+                user_stats[c_id]['updated'] += 1
                 msg = f"🔔 ИЗМЕНЕНИЕ! [{geo.upper()}]\n📦 {p_id}\n\nБыло: {old_title}\nСтало: {new_title}"
                 requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": c_id, "text": msg})
-                results_found.append(f"✅ {p_id}: ИЗМЕНЕНО")
             else:
-                results_found.append(f"🔹 {p_id}: ок")
-        except:
-            results_found.append(f"❌ {p_id}: ошибка")
+                print(f"    ✅ Совпадает.")
+                
+        except Exception as e:
+            print(f"    ❌ Ошибка {p_id}: {e}")
 
-    # ОТПРАВЛЯЕМ СТАТУС В ЛЮБОМ СЛУЧАЕ (чтобы ты видел, что бот работает)
-    # Берем первый chat_id из таблицы, чтобы хоть кому-то пришел отчет
-    if total_apps > 0:
-        first_chat_id = str(df.iloc[0].get('chat_id', '')).strip()
-        status_report = (
-            f"🤖 Автопроверка GitHub завершена\n"
-            f"⏰ Время: {get_minsk_time()}\n"
-            f"📦 Проверено: {checked_count}\n"
-            f"⚠️ Найдено изменений: {updated_count}\n"
-            f"────────────────\n" + "\n".join(results_found[:10]) # первые 10 для лога
-        )
-        requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": first_chat_id, "text": status_report})
+    # Финальный сигнал, что скрипт дошел до конца
+    for c_id, stats in user_stats.items():
+        report = (f"🤖 Автопроверка GitHub завершена\n"
+                  f"⏰ {get_minsk_time()}\n"
+                  f"📦 Проверено: {stats['checked']}\n"
+                  f"⚠️ Обновлений: {stats['updated']}")
+        requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": c_id, "text": report})
 
 if __name__ == "__main__":
     check_apps()
