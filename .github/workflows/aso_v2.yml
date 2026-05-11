@@ -2,7 +2,7 @@ name: ASO Daily Monitor V2
 
 on:
   schedule:
-    - cron: '47 14 * * *'  # 17:47 по Минску (14:47 UTC)
+    - cron: '47 14 * * *'
   workflow_dispatch:
 
 jobs:
@@ -11,12 +11,15 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.9'
+
       - name: Install dependencies
         run: pip install google-play-scraper pandas requests
+
       - name: Run script
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
