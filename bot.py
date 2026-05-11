@@ -47,20 +47,27 @@ def analyze_changes_with_ai(old_t, new_t, old_s, new_s, old_d, new_d):
     
     full_prompt = f"{ASO_PROMPT}\n\n--- БЫЛО ---\nTitle: {old_t}\nShort Description: {old_s}\nFull Description: {old_d}\n\n--- СТАЛО ---\nTitle: {new_t}\nShort Description: {new_s}\nFull Description: {new_d}"
     
-    # Список моделей для перебора в случае ошибки 404
-    models_to_try = ['gemini-1.5-flash-latest', 'gemini-1.5-pro-latest', 'gemini-pro']
+    # Список моделей (используем базовые имена для лучшей совместимости с API v1)
+    models_to_try = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro']
     last_error = ""
 
     for model_name in models_to_try:
         try:
             model = genai.GenerativeModel(model_name)
-            response = model.generate_content(full_prompt)
+            # Добавляем стандартный конфиг, это часто помогает избежать ошибок версий
+            response = model.generate_content(
+                full_prompt,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.7,
+                )
+            )
             return response.text
         except Exception as e:
             last_error = str(e)
+            print(f"⚠️ Модель {model_name} выдала ошибку: {last_error}")
             continue # Пробуем следующую модель
             
-    return f"❌ Ошибка ИИ-анализа (модели недоступны): {last_error}"
+    return f"❌ Ошибка ИИ-анализа (модели недоступны). Убедитесь, что в Google AI Studio приняты условия использования. Последняя ошибка: {last_error}"
 
 def check_apps():
     print(f"--- СТАРТ ПРОВЕРКИ С АВТОЗАПИСЬЮ И ИИ-АНАЛИЗОМ ({get_minsk_time()}) ---")
