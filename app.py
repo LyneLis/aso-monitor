@@ -42,6 +42,15 @@ except Exception as e:
     st.error(f"Ошибка подключения: {e}")
     DB_AVAILABLE = False
 
+def get_users():
+    if not DB_AVAILABLE: return {}
+    try:
+        df = conn.read(worksheet="users", ttl=0)
+        return dict(zip(df['name'], df['chat_id']))
+    except: return {}
+
+users_dict = get_users()
+
 def get_minsk_time():
     return (datetime.utcnow() + timedelta(hours=3)).strftime("%d.%m.%Y %H:%M:%S")
 
@@ -54,17 +63,15 @@ def fetch_gp_data(pkg_id, locale):
     if l_code == "iw": l_code = "iw"
     return app(pkg_id, lang=l_code, country=c_code)
 
-def send_telegram_msg(text):
+def send_telegram_msg(text, chat_id):
     token = st.secrets.get("TELEGRAM_TOKEN")
-    chat_id = st.secrets.get("TELEGRAM_CHAT_ID")
     if token and chat_id:
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         try: requests.post(url, data={"chat_id": chat_id, "text": text})
         except: pass
 
-def send_telegram_file(file_content, filename, caption):
+def send_telegram_file(file_content, filename, caption, chat_id):
     token = st.secrets.get("TELEGRAM_TOKEN")
-    chat_id = st.secrets.get("TELEGRAM_CHAT_ID")
     if token and chat_id:
         url = f"https://api.telegram.org/bot{token}/sendDocument"
         # Кодируем текст в байты, чтобы Telegram правильно принял его как файл
@@ -75,19 +82,22 @@ def send_telegram_file(file_content, filename, caption):
 def load_data():
     if not DB_AVAILABLE: return {}
     try:
-        df = conn.read(ttl=0)
+        df = conn.read(worksheet="apps", ttl=0)
         if df is None or df.empty: return {}
         data = {}
         for _, row in df.iterrows():
             if pd.isna(row['package_id']) or pd.isna(row['geo']): continue
             p_id, geo = str(row['package_id']).strip(), str(row['geo']).strip()
-            u_key = f"{p_id}_{geo}"
+            c_id = str(row.get('chat_id', '')).strip()
+            
+            # Уникальный ключ теперь включает и chat_id, чтобы разные люди могли добавить одно приложение
+            u_key = f"{p_id}_{geo}_{c_id}" 
             c_log = []
             if 'check_log' in df.columns and not pd.isna(row['check_log']):
                 try: c_log = json.loads(str(row['check_log']))
                 except: pass
             data[u_key] = {
-                "package_id": p_id, "geo": geo,
+                "package_id": p_id, "geo": geo, "chat_id": c_id,
                 "current": {"title": str(row['title']), "summary": str(row['summary']), "description": str(row['description'])},
                 "history": json.loads(row['history']) if 'history' in df.columns and isinstance(row['history'], str) else [],
                 "check_log": c_log
@@ -101,12 +111,12 @@ def save_data(data):
         rows = []
         for key, info in data.items():
             rows.append({
-                "package_id": info['package_id'], "geo": info['geo'],
+                "package_id": info['package_id'], "geo": info['geo'], "chat_id": info.get('chat_id', ''),
                 "title": info['current']['title'], "summary": info['current']['summary'], "description": info['current']['description'],
                 "history": json.dumps(info['history'], ensure_ascii=False),
                 "check_log": json.dumps(info.get('check_log', []), ensure_ascii=False)
             })
-        conn.update(data=pd.DataFrame(rows))
+        conn.update(worksheet="apps", data=pd.DataFrame(rows))
         return True
     except: return False
 
@@ -117,7 +127,7 @@ db = load_data()
 if st.button("🔍 Проверить все приложения сейчас"):
     with st.spinner("Сверка со стором..."):
         updates_count = 0
-        full_report = "--- ASO MANUAL REPORT (FROM SITE) ---\n\n"
+        user_reports = {} # Собираем отчеты для каждого пользователя отдельно
         
         for key, info in db.items():
             try:
@@ -132,6 +142,7 @@ if st.button("🔍 Проверить все приложения сейчас")
 
                 if changed:
                     updates_count += 1
+                    c_id = info['chat_id']
                     report_entry = (
                         f"📦 [{info['geo'].upper()}] {info['package_id']}\n"
                         f"ИЗМЕНЕНО: {', '.join(changed)}\n\n"
@@ -143,9 +154,11 @@ if st.button("🔍 Проверить все приложения сейчас")
                         f"--- NEW FD ---\n{new_m['description']}\n"
                         f"{'='*30}\n\n"
                     )
-                    full_report += report_entry
                     
-                    send_telegram_msg(f"⚠️ ИЗМЕНЕНИЕ [{info['geo'].upper()}]\n{new_m['title']}\nИзменено: {', '.join(changed)}")
+                    user_reports.setdefault(c_id, "--- ASO MANUAL REPORT (FROM SITE) ---\n\n")
+                    user_reports[c_id] += report_entry
+                    
+                    send_telegram_msg(f"⚠️ ИЗМЕНЕНИЕ [{info['geo'].upper()}]\n{new_m['title']}\nИзменено: {', '.join(changed)}", c_id)
                     
                     info['history'].append(info['current'])
                     info['current'] = {"title": new_m['title'], "summary": new_m['summary'], "description": new_m['description']}
@@ -156,10 +169,11 @@ if st.button("🔍 Проверить все приложения сейчас")
             except: 
                 pass
         
-        # Если были изменения - отправляем файл
+        # Если были изменения - отправляем файлы каждому пользователю
         if updates_count > 0:
-            send_telegram_file(full_report, "manual_aso_report.txt", f"📊 Ручная проверка: найдено {updates_count} изменений. Файл для нейросети готов.")
-            st.success(f"Проверка окончена. Найдено изменений: {updates_count}. Файл отправлен в Telegram!")
+            for c_id, rep_text in user_reports.items():
+                send_telegram_file(rep_text, "manual_aso_report.txt", f"📊 Ручная проверка: найдено {updates_count} изменений.", c_id)
+            st.success(f"Проверка окончена. Найдено изменений: {updates_count}. Файлы отправлены владельцам!")
         else:
             st.info("Изменений не обнаружено.")
             
@@ -172,19 +186,27 @@ with st.sidebar:
     new_id = st.text_input("Package ID").strip()
     selected_name = st.selectbox("Локаль Google Play", options=list(GP_LOCALES.values()), index=0)
     new_geo = [k for k, v in GP_LOCALES.items() if v == selected_name][0]
+    
+    if users_dict:
+        user_name = st.selectbox("Кто владелец?", options=["Выбрать..."] + list(users_dict.keys()))
+    else:
+        st.warning("База пользователей пуста. Напишите боту /start!")
+        user_name = "Выбрать..."
 
     if st.button("Добавить в мониторинг"):
-        if new_id and new_geo != "":
-            u_key = f"{new_id}_{new_geo}"
+        if new_id and new_geo != "" and user_name != "Выбрать...":
+            selected_chat_id = users_dict[user_name]
+            u_key = f"{new_id}_{new_geo}_{selected_chat_id}"
+            
             if u_key in db: 
-                st.warning("Уже отслеживается!")
+                st.warning("Уже отслеживается этим пользователем!")
             else:
                 success = False
                 with st.spinner(f"Загрузка {new_geo}..."):
                     try:
                         res = fetch_gp_data(new_id, new_geo)
                         db[u_key] = {
-                            "package_id": new_id, "geo": new_geo,
+                            "package_id": new_id, "geo": new_geo, "chat_id": str(selected_chat_id),
                             "current": {"title": res['title'], "summary": res['summary'], "description": res['description']},
                             "history": [], "check_log": [{"time": get_minsk_time(), "status": "🆕 Добавлено"}]
                         }
@@ -194,15 +216,17 @@ with st.sidebar:
                         st.error("Ошибка: Приложение не найдено в этой локали.")
                 
                 if success:
+                    st.success(f"Добавлено для: {user_name}")
                     st.rerun()
         else:
-            st.warning("Заполните ID и выберите локаль!")
+            st.warning("Заполните ID, выберите локаль и владельца!")
 
 # 📦 СПИСОК ПРИЛОЖЕНИЙ
 for key, info in db.items():
     col_exp, col_del = st.columns([11, 1])
     with col_exp:
-        with st.expander(f"📦 [{info['geo']}] {info['current']['title']}"):
+        owner_name = next((name for name, cid in users_dict.items() if str(cid) == str(info.get('chat_id', ''))), "Неизвестно")
+        with st.expander(f"📦 [{info['geo']}] {info['current']['title']} | Владелец: {owner_name}"):
             # ИНДИВИДУАЛЬНАЯ ПРОВЕРКА
             if st.button("Проверить", key=f"ch_{key}"):
                 with st.spinner("Проверка..."):
@@ -215,7 +239,7 @@ for key, info in db.items():
                         if new_m['description'] != info['current']['description']: changed.append("FD")
                         
                         if changed:
-                            send_telegram_msg(f"⚠️ ИЗМЕНЕНИЕ [{info['geo'].upper()}]\n{new_m['title']}\nИзменено: {', '.join(changed)}")
+                            send_telegram_msg(f"⚠️ ИЗМЕНЕНИЕ [{info['geo'].upper()}]\n{new_m['title']}\nИзменено: {', '.join(changed)}", info['chat_id'])
                             info['history'].append(info['current'])
                             info['current'] = {"title": new_m['title'], "summary": new_m['summary'], "description": new_m['description']}
                             log_entry["status"] = f"🔴 Изменение: {', '.join(changed)}"

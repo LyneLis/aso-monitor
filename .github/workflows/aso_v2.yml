@@ -2,8 +2,8 @@ name: ASO Daily Monitor V2
 
 on:
   schedule:
-    - cron: '47 14 * * *'  # Запуск в 17:47 по Минску
-  workflow_dispatch:      # Кнопка ручного запуска
+    - cron: '*/5 * * * *'  # Запуск каждые 5 минут для тестирования
+  workflow_dispatch:      # Кнопка ручного запуска на сайте GitHub
 
 jobs:
   build:
@@ -23,6 +23,5 @@ jobs:
       - name: Run script
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GSHEET_URL: "https://docs.google.com/spreadsheets/d/1jHKbRYt0hJg29RWLIXZ2fL3et_hgzvkhCSxVtTjKV9g/edit?usp=sharing"
         run: python bot.py
