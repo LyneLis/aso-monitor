@@ -62,6 +62,16 @@ def send_telegram_msg(text):
         try: requests.post(url, data={"chat_id": chat_id, "text": text})
         except: pass
 
+def send_telegram_file(file_content, filename, caption):
+    token = st.secrets.get("TELEGRAM_TOKEN")
+    chat_id = st.secrets.get("TELEGRAM_CHAT_ID")
+    if token and chat_id:
+        url = f"https://api.telegram.org/bot{token}/sendDocument"
+        # Кодируем текст в байты, чтобы Telegram правильно принял его как файл
+        files = {"document": (filename, file_content.encode('utf-8'))}
+        try: requests.post(url, data={"chat_id": chat_id, "caption": caption}, files=files)
+        except: pass
+
 def load_data():
     if not DB_AVAILABLE: return {}
     try:
@@ -107,24 +117,52 @@ db = load_data()
 if st.button("🔍 Проверить все приложения сейчас"):
     with st.spinner("Сверка со стором..."):
         updates_count = 0
+        full_report = "--- ASO MANUAL REPORT (FROM SITE) ---\n\n"
+        
         for key, info in db.items():
             try:
                 new_m = fetch_gp_data(info['package_id'], info['geo'])
                 log_entry = {"time": get_minsk_time(), "status": "🟢 Без изменений"}
                 changed = []
-                if new_m['title'] != info['current']['title']: changed.append("Title")
-                if new_m['summary'] != info['current']['summary']: changed.append("SD")
-                if new_m['description'] != info['current']['description']: changed.append("FD")
+                
+                old = info['current']
+                if new_m['title'] != old['title']: changed.append("Title")
+                if new_m['summary'] != old['summary']: changed.append("SD")
+                if new_m['description'] != old['description']: changed.append("FD")
 
                 if changed:
+                    updates_count += 1
+                    report_entry = (
+                        f"📦 [{info['geo'].upper()}] {info['package_id']}\n"
+                        f"ИЗМЕНЕНО: {', '.join(changed)}\n\n"
+                        f"--- OLD TITLE ---\n{old['title']}\n"
+                        f"--- NEW TITLE ---\n{new_m['title']}\n\n"
+                        f"--- OLD SD ---\n{old['summary']}\n"
+                        f"--- NEW SD ---\n{new_m['summary']}\n\n"
+                        f"--- OLD FD ---\n{old['description']}\n"
+                        f"--- NEW FD ---\n{new_m['description']}\n"
+                        f"{'='*30}\n\n"
+                    )
+                    full_report += report_entry
+                    
                     send_telegram_msg(f"⚠️ ИЗМЕНЕНИЕ [{info['geo'].upper()}]\n{new_m['title']}\nИзменено: {', '.join(changed)}")
+                    
                     info['history'].append(info['current'])
                     info['current'] = {"title": new_m['title'], "summary": new_m['summary'], "description": new_m['description']}
                     log_entry["status"] = f"🔴 Изменение: {', '.join(changed)}"
-                    updates_count += 1
+                
                 info.setdefault('check_log', []).append(log_entry)
                 info['check_log'] = info['check_log'][-15:]
-            except: pass
+            except: 
+                pass
+        
+        # Если были изменения - отправляем файл
+        if updates_count > 0:
+            send_telegram_file(full_report, "manual_aso_report.txt", f"📊 Ручная проверка: найдено {updates_count} изменений. Файл для нейросети готов.")
+            st.success(f"Проверка окончена. Найдено изменений: {updates_count}. Файл отправлен в Telegram!")
+        else:
+            st.info("Изменений не обнаружено.")
+            
         save_data(db)
         st.rerun()
 
