@@ -2,7 +2,7 @@ name: ASO Daily Check
 
 on:
   schedule:
-    - cron: '17 6 * * *' # Запуск каждый день в 06:00 (UTC)
+    - cron: '47 8 * * *' # Запуск каждый день в 11:47 (Минск)
   workflow_dispatch: # Кнопка ручного запуска
 
 jobs:
