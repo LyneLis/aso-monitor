@@ -1,26 +1,27 @@
-name: ASO_Final_Monitor_V3
+name: ASO_REBOOT_MONITOR
 
 on:
-  schedule:
-    - cron: '*/15 * * * *'
   workflow_dispatch:
+  schedule:
+    # Проверка каждые 5 минут
+    - cron: '*/5 * * * *'
 
 jobs:
-  check-task:
+  run_script:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.9'
 
-      - name: Install
+      - name: Install Libraries
         run: pip install google-play-scraper gspread requests pandas
 
-      - name: Run
+      - name: Run Monitor
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
