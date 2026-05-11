@@ -2,9 +2,8 @@ name: ASO Daily Monitor V2
 
 on:
   schedule:
-    # Запуск в 14:07 по Минску (11:07 UTC)
-    - cron: '07 11 * * *'
-  workflow_dispatch: # Кнопка ручного запуска
+    - cron: '47 14 * * *'  # 17:47 по Минску (14:47 UTC)
+  workflow_dispatch:
 
 jobs:
   build:
@@ -12,20 +11,15 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.9'
-
       - name: Install dependencies
-        run: |
-          pip install google-play-scraper pandas requests
-
+        run: pip install google-play-scraper pandas requests
       - name: Run script
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          # Ссылка на таблицу напрямую, как у тебя была
           GSHEET_URL: "https://docs.google.com/spreadsheets/d/1jHKBRyt0hJg29RWLIXZ2fL3et_hzvkhCSxVtTjKV9g/edit?gid=0#gid=0"
         run: python bot.py

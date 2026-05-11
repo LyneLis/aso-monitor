@@ -1,4 +1,3 @@
-import json
 import pandas as pd
 import requests
 from google_play_scraper import app
@@ -17,66 +16,73 @@ def fetch_gp_data(pkg_id, locale):
     if l_code == "iw": l_code = "iw"
     return app(pkg_id, lang=l_code, country=c_code)
 
-def send_telegram(text):
+def send_telegram_msg(text):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    try:
-        requests.post(url, data={"chat_id": CHAT_ID, "text": text}, timeout=10)
-    except Exception as e:
-        print(f"Ошибка отправки в ТГ: {e}")
+    requests.post(url, data={"chat_id": CHAT_ID, "text": text})
+
+def send_telegram_file(file_path, caption):
+    url = f"https://api.telegram.org/bot{TOKEN}/sendDocument"
+    with open(file_path, "rb") as file:
+        requests.post(url, data={"chat_id": CHAT_ID, "caption": caption}, files={"document": file})
 
 def run_check():
     try:
         csv_url = GSHEET_URL.replace("/edit?gid=", "/export?format=csv&gid=")
         df = pd.read_csv(csv_url)
         
-        updates_count = 0
-        errors = []
-        apps_checked = 0
+        updates_found = 0
+        errors_found = []
+        full_report = "--- ASO COMPARISON REPORT ---\n\n"
         
         for _, row in df.iterrows():
             if pd.isna(row['package_id']) or pd.isna(row['geo']): continue
             
-            pkg_id = str(row['package_id']).strip()
-            geo = str(row['geo']).strip()
-            apps_checked += 1
-            
-            old_title = str(row['title'])
-            old_summary = str(row['summary'])
-            old_desc = str(row['description'])
+            pkg_id, geo = str(row['package_id']).strip(), str(row['geo']).strip()
+            old_title, old_summary, old_desc = str(row['title']), str(row['summary']), str(row['description'])
             
             try:
                 res = fetch_gp_data(pkg_id, geo)
-                
                 changed = []
                 if res['title'] != old_title: changed.append("Title")
                 if res['summary'] != old_summary: changed.append("SD")
                 if res['description'] != old_desc: changed.append("FD")
                 
                 if changed:
-                    msg = f"🔔 ИЗМЕНЕНИЕ [{geo.upper()}]:\nПриложение: {res['title']}\nID: {pkg_id}\n\nИзменено: {', '.join(changed)}"
-                    send_telegram(msg)
-                    updates_count += 1
+                    updates_found += 1
+                    report_entry = (
+                        f"📦 [{geo.upper()}] {pkg_id}\n"
+                        f"ИЗМЕНЕНО: {', '.join(changed)}\n\n"
+                        f"--- OLD TITLE ---\n{old_title}\n"
+                        f"--- NEW TITLE ---\n{res['title']}\n\n"
+                        f"--- OLD SD ---\n{old_summary}\n"
+                        f"--- NEW SD ---\n{res['summary']}\n\n"
+                        f"--- OLD FD ---\n{old_desc}\n"
+                        f"--- NEW FD ---\n{res['description']}\n"
+                        f"{'='*30}\n\n"
+                    )
+                    full_report += report_entry
+                    send_telegram_msg(f"🔔 Изменение в {pkg_id} ({geo})")
             except Exception as e:
-                # Фиксируем, что именно пошло не так
-                errors.append(f"❌ {pkg_id} ({geo}): {str(e)}")
+                # Собираем ошибки, чтобы не молчать
+                errors_found.append(f"❌ Ошибка {pkg_id} ({geo}): {e}")
                 
-        # --- ФИНАЛЬНЫЕ УВЕДОМЛЕНИЯ ---
+        # Отправляем файл, если есть изменения
+        if updates_found > 0:
+            file_name = "aso_report.txt"
+            with open(file_name, "w", encoding="utf-8") as f:
+                f.write(full_report)
+            send_telegram_file(file_name, f"📊 Найдено изменений: {updates_found}. Файл для нейросети готов.")
         
-        # 1. Если вообще не нашли изменений
-        if updates_count == 0 and not errors:
-            send_telegram(f"✅ Ежедневная проверка завершена.\nПроверено приложений: {apps_checked}\nИзменений не обнаружено. Все спокойно!")
-        
-        # 2. Если были ошибки
-        if errors:
-            error_report = "\n".join(errors)
-            send_telegram(f"⚠️ ОТЧЕТ ОБ ОШИБКАХ ПРОВЕРКИ:\n\n{error_report}")
+        # Если изменений нет, но ошибок тоже нет
+        elif not errors_found:
+            send_telegram_msg("✅ Автопроверка: Изменений в сторах не найдено.")
 
-        # 3. Если были изменения (дополнительное резюме)
-        if updates_count > 0:
-            send_telegram(f"📊 Итог проверки: найдено изменений в {updates_count} приложениях.")
+        # Если были ошибки по конкретным приложениям — присылаем их списком
+        if errors_found:
+            send_telegram_msg("⚠️ Проблемы при проверке некоторых приложений:\n\n" + "\n".join(errors_found))
             
     except Exception as e: 
-        send_telegram(f"🚨 КРИТИЧЕСКАЯ ОШИБКА СКРИПТА:\n{str(e)}")
+        send_telegram_msg(f"🚨 Критическая ошибка скрипта: {e}")
 
 if __name__ == "__main__":
     run_check()
