@@ -5,6 +5,10 @@ on:
     - cron: '0 */2 * * *'
   workflow_dispatch:
 
+# Добавляем настройку, чтобы GitHub не ругался на Node.js
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   check:
     runs-on: ubuntu-latest
