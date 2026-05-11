@@ -1,28 +1,26 @@
-name: ASO Auto Monitor
+name: ASO_Final_Monitor_V3
 
 on:
   schedule:
-    # Запуск каждые 15 минут (время по UTC!)
     - cron: '*/15 * * * *'
-  # Оставляем кнопку для ручного запуска
   workflow_dispatch:
 
 jobs:
-  run-monitor:
+  check-task:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.9'
 
-      - name: Install dependencies
+      - name: Install
         run: pip install google-play-scraper gspread requests pandas
 
-      - name: Run script
+      - name: Run
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
