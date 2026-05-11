@@ -3,17 +3,58 @@ from google_play_scraper import app
 import os
 import json
 import requests
+import google.generativeai as genai
 from datetime import datetime, timedelta
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 service_account_info = json.loads(os.environ.get("GCP_SERVICE_ACCOUNT_JSON"))
 SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1jHKbRYt0hJg29RWLIXZ2fL3et_hgzvkhCSxVtTjKV9g/edit"
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+
+# Настраиваем ИИ, если ключ передан
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+
+# СИСТЕМНЫЙ ПРОМПТ
+ASO_PROMPT = """
+Ты — ведущий ASO-стратег и эксперт по мобильному маркетингу с глубокой экспертизой в анализе данных. Твоя специализация — реверс-инжиниринг стратегий конкурентов через деконструкцию их метаданных и обновлений.
+
+Тебе будут предоставлены данные о метаданных (Title, Subtitle, Description) конкурента "До" и "После" последних релизов. Твоя задача — провести глубокий анализ изменений и выявить скрытую стратегию роста.
+
+Analysis Algorithm:
+1. Semantic Delta: Выяви, какие конкретно ключевые слова были добавлены, какие удалены, а какие перемещены в зоны с большим весом (например, из Description в Title).
+2. Intent Analysis: Определи изменение фокуса. Они ушли в "широкие охватные запросы" (Generic) или в "узкие высококонверсионные" (Long-tail)? Сменили ли они акцент с функций на выгоды?
+3. Weight Redistribution: Проанализируй, как изменилась плотность ключевых слов. Пытаются ли они ранжироваться по новым категорийным запросам?
+4. Hypothesis Generation: На основе изменений сформулируй 3 гипотезы: почему они это сделали и на какой сегмент аудитории теперь нацелены.
+5. Impact Prediction: Как это изменение повлияет на их видимость в поиске и конверсию (CR).
+
+Output Format (Presentation Ready):
+- Summary: Краткий вывод (1 предложение о векторе стратегии).
+- Keyword Migration Table: Таблица [Удалено] | [Добавлено] | [Приоритезировано].
+- Strategic Shift: Описание качественного изменения стратегии.
+- Threat Level: Насколько это изменение опасно для нашего проекта (High/Medium/Low).
+- Action Plan: 3 конкретных шага, которые мы должны предпринять в ответ.
+
+Tone: Профессиональный, аналитический, лаконичный. Избегай общих фраз, используй терминологию ASO.
+"""
 
 def get_minsk_time():
     return (datetime.utcnow() + timedelta(hours=3)).strftime("%d.%m.%Y %H:%M:%S")
 
+def analyze_changes_with_ai(old_t, new_t, old_s, new_s, old_d, new_d):
+    if not GEMINI_API_KEY:
+        return "❌ Ключ Gemini API не найден. Анализ не выполнен."
+    
+    try:
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        full_prompt = f"{ASO_PROMPT}\n\n--- БЫЛО ---\nTitle: {old_t}\nShort Description: {old_s}\nFull Description: {old_d}\n\n--- СТАЛО ---\nTitle: {new_t}\nShort Description: {new_s}\nFull Description: {new_d}"
+        response = model.generate_content(full_prompt)
+        return response.text
+    except Exception as e:
+        return f"❌ Ошибка ИИ-анализа: {e}"
+
 def check_apps():
-    print(f"--- СТАРТ ПРОВЕРКИ С АВТОЗАПИСЬЮ ЛОГОВ ({get_minsk_time()}) ---")
+    print(f"--- СТАРТ ПРОВЕРКИ С АВТОЗАПИСЬЮ И ИИ-АНАЛИЗОМ ({get_minsk_time()}) ---")
     
     try:
         gc = gspread.service_account_from_dict(service_account_info)
@@ -78,7 +119,7 @@ def check_apps():
             if new_d != old_d: changes.append("FD")
 
             if changes:
-                print(f"    ⚠️ Изменение в {p_id}. Отправляю отчет и обновляю таблицу...")
+                print(f"    ⚠️ Изменение в {p_id}. Отправляю отчет и генерирую ИИ-анализ...")
                 user_stats[c_id]['updated'] += 1
                 
                 # Добавляем лог с изменениями
@@ -107,7 +148,12 @@ def check_apps():
                                  files={"document": f})
                 os.remove(file_path)
 
-                # 3. ЗАПИСЫВАЕМ НОВЫЕ ДАННЫЕ
+                # 3. ГЕНЕРИРУЕМ И ОТПРАВЛЯЕМ ИИ-АНАЛИЗ
+                ai_analysis = analyze_changes_with_ai(old_t, new_t, old_s, new_s, old_d, new_d)
+                ai_msg = f"🤖 **Анализ стратегии от ИИ:**\n\n{ai_analysis}"
+                requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": c_id, "text": ai_msg, "parse_mode": "Markdown"})
+
+                # 4. ЗАПИСЫВАЕМ НОВЫЕ ДАННЫЕ
                 if "title" in col_map: worksheet.update_cell(row_number, col_map["title"], new_t)
                 if "summary" in col_map: worksheet.update_cell(row_number, col_map["summary"], new_s)
                 if "description" in col_map: worksheet.update_cell(row_number, col_map["description"], new_d)

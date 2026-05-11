@@ -5,7 +5,6 @@ on:
     - cron: '0 */2 * * *'
   workflow_dispatch:
 
-# Добавляем настройку, чтобы GitHub не ругался на Node.js
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -18,9 +17,10 @@ jobs:
         with:
           python-version: '3.9'
       - name: Install
-        run: pip install google-play-scraper gspread requests pandas
+        run: pip install google-play-scraper gspread requests pandas google-generativeai
       - name: Run
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python bot.py
