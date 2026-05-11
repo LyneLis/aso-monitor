@@ -1,35 +1,34 @@
-import pandas as pd
-import requests
+import gspread
 from google_play_scraper import app
 import os
-import time
-import random
+import json
+import requests
 from datetime import datetime, timedelta
 
+# Настройки
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
-GS_URL = os.environ.get("GSHEET_URL")
+# Берем JSON из секретов GitHub
+service_account_info = json.loads(os.environ.get("GCP_SERVICE_ACCOUNT_JSON"))
+SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1jHKbRYt0hJg29RWLIXZ2fL3et_hgzvkhCSxVtTjKV9g/edit"
 
 def get_minsk_time():
     return (datetime.utcnow() + timedelta(hours=3)).strftime("%H:%M:%S")
 
 def check_apps():
-    # Генерируем абсолютно случайный параметр для каждой попытки обхода кэша
-    rand_id = random.randint(1000, 9999)
-    csv_url = GS_URL.split('/edit')[0] + f"/export?format=csv&gid=0&cache_bust={rand_id}"
+    print(f"--- СТАРТ ПРОВЕРКИ ({get_minsk_time()}) ---")
     
-    print(f"--- ЗАПУСК АВТОПРОВЕРКИ ({get_minsk_time()}) ---")
-    print(f"Использую URL: {csv_url}")
+    # Авторизация через Service Account
+    gc = gspread.service_account_from_dict(service_account_info)
+    sh = gc.open_by_url(SPREADSHEET_URL)
+    worksheet = sh.get_worksheet(0) # Берем первый лист (apps)
     
-    try:
-        df = pd.read_csv(csv_url)
-        print(f"✅ Таблица успешно загружена. Строк: {len(df)}")
-    except Exception as e:
-        print(f"❌ ОШИБКА ЗАГРУЗКИ CSV: {e}")
-        return
+    # Получаем все данные
+    data = worksheet.get_all_records()
+    print(f"✅ Данные получены напрямую из API. Строк: {len(data)}")
 
     user_stats = {}
-    
-    for i, row in df.iterrows():
+
+    for i, row in enumerate(data):
         p_id = str(row.get('package_id', '')).strip()
         if not p_id or p_id == 'nan': continue
         
@@ -42,30 +41,24 @@ def check_apps():
         user_stats[c_id]['checked'] += 1
         
         try:
-            print(f"[{i+1}] Проверяю {p_id} ({geo})...")
             res = app(p_id, lang=geo, country=geo)
-            
-            # ВНИМАНИЕ: Смотрим логи здесь!
             old_title = str(row.get('title', '')).strip()
             new_title = str(res['title']).strip()
             
-            print(f"    В таблице: '{old_title}'")
-            print(f"    В сторе:   '{new_title}'")
-            
+            # Для отладки в логах
+            print(f"[{i+1}] {p_id} ({geo}) | Таблица: '{old_title[:15]}...' | Стор: '{new_title[:15]}...'")
+
             if new_title != old_title:
-                print(f"    ⚠️ ЕСТЬ ИЗМЕНЕНИЕ!")
+                print(f"    ⚠️ ИЗМЕНЕНИЕ НАЙДЕНО!")
                 user_stats[c_id]['updated'] += 1
                 msg = f"🔔 ИЗМЕНЕНИЕ! [{geo.upper()}]\n📦 {p_id}\n\nБыло: {old_title}\nСтало: {new_title}"
                 requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": c_id, "text": msg})
-            else:
-                print(f"    ✅ Совпадает.")
-                
         except Exception as e:
             print(f"    ❌ Ошибка {p_id}: {e}")
 
-    # Финальный сигнал, что скрипт дошел до конца
+    # Финальный отчет
     for c_id, stats in user_stats.items():
-        report = (f"🤖 Автопроверка GitHub завершена\n"
+        report = (f"🤖 Автопроверка GitHub (API Mode)\n"
                   f"⏰ {get_minsk_time()}\n"
                   f"📦 Проверено: {stats['checked']}\n"
                   f"⚠️ Обновлений: {stats['updated']}")
