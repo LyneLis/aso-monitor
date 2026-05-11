@@ -55,11 +55,15 @@ def get_minsk_time():
     return (datetime.utcnow() + timedelta(hours=3)).strftime("%d.%m.%Y %H:%M:%S")
 
 def fetch_gp_data(pkg_id, locale):
-    if "-" in locale:
-        l_parts = locale.split("-")
-        l_code, c_code = l_parts[0].lower(), l_parts[1].lower()
+    # ОБНОВЛЕННАЯ ЛОГИКА ПАРСИНГА ЛОКАЛЕЙ
+    if locale == "es-419":
+        l_code, c_code = "es-419", "mx" # Латам -> Мексика
+    elif "-" in locale:
+        l_code = locale # Передаем язык целиком (например, zh-TW)
+        c_code = locale.split("-")[1].lower() # Страну берем после дефиса
     else:
         l_code, c_code = locale.lower(), locale.lower()
+        
     if l_code == "iw": l_code = "iw"
     return app(pkg_id, lang=l_code, country=c_code)
 

@@ -44,9 +44,12 @@ def check_apps():
             user_stats[c_id] = {'checked': 0, 'updated': 0}
         user_stats[c_id]['checked'] += 1
 
-        if "-" in full_geo:
-            parts = full_geo.split("-")
-            l_code, c_code = parts[0].lower(), parts[1].upper()
+        # ОБНОВЛЕННАЯ ЛОГИКА ПАРСИНГА ЛОКАЛЕЙ
+        if full_geo == "es-419":
+            l_code, c_code = "es-419", "MX"
+        elif "-" in full_geo:
+            l_code = full_geo # Передаем язык целиком
+            c_code = full_geo.split("-")[1].upper()
         else:
             l_code, c_code = full_geo.lower(), full_geo.upper()
 
