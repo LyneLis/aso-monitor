@@ -2,11 +2,80 @@ import streamlit as st
 import json
 import pandas as pd
 import requests
+import google.generativeai as genai
 from google_play_scraper import app
 from datetime import datetime, timedelta
 from streamlit_gsheets import GSheetsConnection
 
 st.set_page_config(page_title="ASO Monitor PRO", layout="wide")
+
+# --- НАСТРОЙКА ИИ ---
+GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY")
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY, transport='rest')
+
+# СИСТЕМНЫЙ ПРОМПТ ДЛЯ ASO АНАЛИЗА
+ASO_PROMPT = """
+Ты — ведущий ASO-стратег и эксперт по мобильному маркетингу с глубокой экспертизой в анализе данных. Твоя специализация — реверс-инжиниринг стратегий конкурентов через деконструкцию их метаданных и обновлений.
+
+Тебе будут предоставлены данные о метаданных (Title, Subtitle, Description) конкурента "До" и "После" последних релизов. Твоя задача — провести глубокий анализ изменений и выявить скрытую стратегию роста.
+
+Analysis Algorithm:
+1. Semantic Delta: Выяви, какие конкретно ключевые слова были добавлены, какие удалены, а какие перемещены в зоны с большим весом.
+2. Intent Analysis: Определи изменение фокуса (Generic vs Long-tail, функции vs выгоды).
+3. Weight Redistribution: Проанализируй плотность ключевых слов.
+4. Hypothesis Generation: Сформулируй 3 гипотезы о целях изменений.
+5. Impact Prediction: Прогноз влияния на видимость и CR.
+
+Output Format:
+- Summary: Краткий вывод (1 предложение о векторе стратегии).
+- Keywords Migration:
+  Удалено: список через запятую
+  Добавлено: список через запятую
+  Приоритезировано: список через запятую
+- Strategic Shift: Описание изменений.
+- Threat Level: High/Medium/Low.
+- Action Plan: 3 конкретных шага.
+
+Tone: Профессиональный, аналитический, лаконичный.
+"""
+
+def analyze_changes_with_ai(old_t, new_t, old_s, new_s, old_d, new_d):
+    if not GEMINI_API_KEY:
+        return "❌ Ключ Gemini API не найден в секретах Streamlit."
+    
+    full_prompt = (
+        f"{ASO_PROMPT}\n\n"
+        f"--- БЫЛО ---\nTitle: {old_t}\nShort Description: {old_s}\nFull Description: {old_d}\n\n"
+        f"--- СТАЛО ---\nTitle: {new_t}\nShort Description: {new_s}\nFull Description: {new_d}"
+    )
+
+    available_models = []
+    try:
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                available_models.append(m.name)
+    except Exception as e:
+        print(f"⚠️ Не удалось получить список моделей: {e}")
+
+    priority_list = ['models/gemini-3-flash', 'models/gemini-1.5-flash', 'models/gemini-1.5-pro']
+    
+    models_to_try = [m for m in priority_list if m in available_models]
+    if not models_to_try:
+        models_to_try = available_models[:2] if available_models else priority_list
+
+    last_error = ""
+    for model_name in models_to_try:
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(full_prompt)
+            if response and response.text:
+                return response.text
+        except Exception as e:
+            last_error = str(e)
+            continue 
+            
+    return f"❌ Ошибка ИИ-анализа: {last_error}"
 
 # Словарь локалей
 GP_LOCALES = {
@@ -55,23 +124,29 @@ def get_minsk_time():
     return (datetime.utcnow() + timedelta(hours=3)).strftime("%d.%m.%Y %H:%M:%S")
 
 def fetch_gp_data(pkg_id, locale):
-    # ОБНОВЛЕННАЯ ЛОГИКА ПАРСИНГА ЛОКАЛЕЙ
     if locale == "es-419":
-        l_code, c_code = "es-419", "mx" # Латам -> Мексика
+        l_code, c_code = "es-419", "mx" 
     elif "-" in locale:
-        l_code = locale # Передаем язык целиком (например, zh-TW)
-        c_code = locale.split("-")[1].lower() # Страну берем после дефиса
+        l_code = locale 
+        c_code = locale.split("-")[1].lower() 
     else:
         l_code, c_code = locale.lower(), locale.lower()
         
     if l_code == "iw": l_code = "iw"
     return app(pkg_id, lang=l_code, country=c_code)
 
-def send_telegram_msg(text, chat_id):
+def send_telegram_msg(text, chat_id, use_markdown=False):
     token = st.secrets.get("TELEGRAM_TOKEN")
     if token and chat_id:
         url = f"https://api.telegram.org/bot{token}/sendMessage"
-        try: requests.post(url, data={"chat_id": chat_id, "text": text})
+        data = {"chat_id": chat_id, "text": text}
+        if use_markdown:
+            data["parse_mode"] = "Markdown"
+        try: 
+            res = requests.post(url, data=data)
+            # Если отправка с Markdown не удалась, отправляем как обычный текст
+            if use_markdown and res.status_code != 200:
+                requests.post(url, data={"chat_id": chat_id, "text": text})
         except: pass
 
 def send_telegram_file(file_content, filename, caption, chat_id):
@@ -127,7 +202,7 @@ db = load_data()
 
 # 🔍 ГЛАВНАЯ КНОПКА ПРОВЕРКИ
 if st.button("🔍 Проверить все приложения сейчас"):
-    with st.spinner("Сверка со стором..."):
+    with st.spinner("Сверка со стором и анализ ИИ..."):
         updates_count = 0
         user_reports = {} 
         
@@ -160,7 +235,13 @@ if st.button("🔍 Проверить все приложения сейчас")
                     user_reports.setdefault(c_id, "--- ASO MANUAL REPORT (FROM SITE) ---\n\n")
                     user_reports[c_id] += report_entry
                     
+                    # 1. Уведомление об изменении
                     send_telegram_msg(f"⚠️ ИЗМЕНЕНИЕ [{info['geo'].upper()}]\n{new_m['title']}\nИзменено: {', '.join(changed)}", c_id)
+                    
+                    # 2. ИИ Анализ
+                    ai_analysis = analyze_changes_with_ai(old['title'], new_m['title'], old['summary'], new_m['summary'], old['description'], new_m['description'])
+                    ai_msg = f"🤖 *Анализ стратегии от ИИ (Сайт):*\n\n{ai_analysis}"
+                    send_telegram_msg(ai_msg, c_id, use_markdown=True)
                     
                     info['history'].append(info['current'])
                     info['current'] = {"title": new_m['title'], "summary": new_m['summary'], "description": new_m['description']}
@@ -174,7 +255,7 @@ if st.button("🔍 Проверить все приложения сейчас")
         if updates_count > 0:
             for c_id, rep_text in user_reports.items():
                 send_telegram_file(rep_text, "manual_aso_report.txt", f"📊 Ручная проверка: найдено {updates_count} изменений.", c_id)
-            st.success(f"Проверка окончена. Найдено изменений: {updates_count}. Файлы отправлены пользователям!")
+            st.success(f"Проверка окончена. Найдено изменений: {updates_count}. Файлы и ИИ-анализ отправлены пользователям!")
         else:
             st.info("Изменений не обнаружено.")
             
@@ -185,7 +266,6 @@ if st.button("🔍 Проверить все приложения сейчас")
 with st.sidebar:
     st.header("➕ Добавить приложение")
     
-    # КНОПКА РЕГИСТРАЦИИ В TELEGRAM
     st.info("Чтобы получать уведомления, сначала напишите боту.")
     st.link_button("➕ Добавить бота", "https://t.me/aso_omg_bot", use_container_width=True)
     
@@ -236,21 +316,31 @@ for key, info in db.items():
         owner_name = next((name for name, cid in users_dict.items() if str(cid) == str(info.get('chat_id', ''))), "Неизвестно")
         with st.expander(f"📦 [{info['geo']}] {info['current']['title']} | Пользователь: {owner_name}"):
             if st.button("Проверить", key=f"ch_{key}"):
-                with st.spinner("Проверка..."):
+                with st.spinner("Проверка и генерация ИИ-отчета..."):
                     try:
                         new_m = fetch_gp_data(info['package_id'], info['geo'])
                         log_entry = {"time": get_minsk_time(), "status": "🟢 Ручная: Ок"}
                         changed = []
-                        if new_m['title'] != info['current']['title']: changed.append("Title")
-                        if new_m['summary'] != info['current']['summary']: changed.append("SD")
-                        if new_m['description'] != info['current']['description']: changed.append("FD")
+                        old = info['current']
+                        
+                        if new_m['title'] != old['title']: changed.append("Title")
+                        if new_m['summary'] != old['summary']: changed.append("SD")
+                        if new_m['description'] != old['description']: changed.append("FD")
                         
                         if changed:
+                            # 1. Уведомление
                             send_telegram_msg(f"⚠️ ИЗМЕНЕНИЕ [{info['geo'].upper()}]\n{new_m['title']}\nИзменено: {', '.join(changed)}", info['chat_id'])
+                            
+                            # 2. ИИ Анализ
+                            ai_analysis = analyze_changes_with_ai(old['title'], new_m['title'], old['summary'], new_m['summary'], old['description'], new_m['description'])
+                            ai_msg = f"🤖 *Анализ стратегии от ИИ (Сайт):*\n\n{ai_analysis}"
+                            send_telegram_msg(ai_msg, info['chat_id'], use_markdown=True)
+                            
+                            # 3. Обновление
                             info['history'].append(info['current'])
                             info['current'] = {"title": new_m['title'], "summary": new_m['summary'], "description": new_m['description']}
                             log_entry["status"] = f"🔴 Ручная: Изменение ({', '.join(changed)})"
-                            st.success(f"Обновлено: {', '.join(changed)}")
+                            st.success(f"Обновлено: {', '.join(changed)}. ИИ-отчет отправлен.")
                         else:
                             st.info("Без изменений.")
                         
@@ -259,7 +349,7 @@ for key, info in db.items():
                         save_data(db)
                         st.rerun()
                     except Exception as e:
-                        st.error(f"Ошибка связи со стором")
+                        st.error(f"Ошибка связи со стором: {e}")
 
             st.write(f"**ID:** {info['package_id']}")
             st.write(f"**Локаль:** {GP_LOCALES.get(info['geo'], info['geo'])}")
