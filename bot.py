@@ -5,7 +5,7 @@ import json
 import requests
 import google.generativeai as genai
 from datetime import datetime, timedelta
-import time # Добавили для пауз
+import time
 
 # Настройки окружения
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
@@ -17,8 +17,14 @@ if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY, transport='rest')
 
 ASO_PROMPT = """
-Ты — ведущий ASO-стратег и эксперт по мобильному маркетингу.
-Проведи глубокий анализ изменений Title, SD, FD. Выяви стратегию и дай план из 3 шагов.
+Ты — ведущий ASO-стратег и эксперт по мобильному маркетингу с глубокой экспертизой в анализе данных. Твоя специализация — реверс-инжиниринг стратегий конкурентов.
+Тебе будут предоставлены данные "До" и "После". Проведи анализ изменений и выяви стратегию роста.
+Output Format:
+- Summary: краткий вывод.
+- Keywords Migration: что удалено/добавлено.
+- Strategic Shift: описание.
+- Threat Level: High/Medium/Low.
+- Action Plan: 3 шага.
 """
 
 def get_minsk_time():
@@ -26,27 +32,39 @@ def get_minsk_time():
 
 def analyze_changes_with_ai(old_t, new_t, old_s, new_s, old_d, new_d):
     if not GEMINI_API_KEY: return "❌ Ключ Gemini API не найден."
+    
     full_prompt = (
         f"{ASO_PROMPT}\n\n"
         f"--- БЫЛО ---\nTitle: {old_t}\nShort Description: {old_s}\nFull Description: {old_d}\n\n"
         f"--- СТАЛО ---\nTitle: {new_t}\nShort Description: {new_s}\nFull Description: {new_d}"
     )
+
+    priority_models = ['models/gemini-3-flash', 'models/gemini-2.0-flash', 'models/gemini-1.5-flash']
+    available_models = []
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content(full_prompt)
-        return response.text if response else "Ошибка ИИ"
-    except Exception as e:
-        return f"❌ Ошибка ИИ: {e}"
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                available_models.append(m.name)
+    except: available_models = priority_models
+
+    models_to_try = [m for m in priority_models if m in available_models]
+    if not models_to_try: models_to_try = available_models[:1] if available_models else priority_models
+
+    for model_name in models_to_try:
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(full_prompt)
+            if response and response.text: return response.text
+        except: continue
+    return "❌ Ошибка ИИ-анализа после нескольких попыток."
 
 def check_apps():
     print(f"--- СТАРТ ПРОВЕРКИ v3.2 ({get_minsk_time()}) ---")
-    
     try:
         gc = gspread.service_account_from_dict(service_account_info)
         sh = gc.open_by_url(SPREADSHEET_URL)
         worksheet = sh.get_worksheet(0) 
         headers = worksheet.row_values(1)
-        # Получаем все данные одним запросом (Read 1/1)
         all_rows = worksheet.get_all_values() 
         col_map = {name: i for i, name in enumerate(headers)}
     except Exception as e:
@@ -54,9 +72,7 @@ def check_apps():
 
     user_stats = {}
 
-    # Начинаем со 2-й строки (индекс 1 в all_rows)
     for i, row_values in enumerate(all_rows[1:], start=2):
-        # Создаем словарь текущей строки для удобной работы
         row = {headers[j]: (row_values[j] if j < len(row_values) else "") for j in range(len(headers))}
         
         p_id = str(row.get('package_id', '')).strip()
@@ -70,16 +86,16 @@ def check_apps():
             user_stats[c_id]['checked'] += 1
 
         full_geo = str(row.get('geo', 'us')).strip()
-        l_code, c_code = (full_geo, full_geo.split("-")[1].upper()) if "-" in full_geo else (full_geo.lower(), full_geo.upper())
         if full_geo == "es-419": l_code, c_code = "es-419", "MX"
+        elif "-" in full_geo: l_code, c_code = full_geo, full_geo.split("-")[1].upper()
+        else: l_code, c_code = full_geo.lower(), full_geo.upper()
 
         try:
             res = app(p_id, lang=l_code, country=c_code)
             
-            # Читаем старые данные
+            # Старые данные
             old_t, old_s, old_d = str(row.get('title', '')), str(row.get('summary', '')), str(row.get('description', ''))
             old_icon, old_header = str(row.get('icon', '')), str(row.get('header_image', ''))
-            
             try: old_scr = json.loads(str(row.get('screenshots', '[]')))
             except: old_scr = []
             try: history = json.loads(str(row.get('history', '[]')))
@@ -105,11 +121,9 @@ def check_apps():
                 
                 if has_owner:
                     user_stats[c_id]['updated'] += 1
-                    
                     is_rollback = any(new_t == past.get('title') and new_s == past.get('summary') for past in history[-3:])
                     msg_prefix = "🔄 АВТО-ОТКАТ" if is_rollback else "🔔 АВТО-ИЗМЕНЕНИЕ!"
                     alert_msg = f"{msg_prefix} [{full_geo.upper()}]\n📦 {p_id}\n\nПоля: {', '.join(changes)}"
-                    if is_rollback: alert_msg += "\n\n⚠️ Тексты вернулись к старой версии."
                     
                     requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": c_id, "text": alert_msg})
                     
@@ -123,7 +137,7 @@ def check_apps():
                         requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
                                       data={"chat_id": c_id, "text": f"🤖 *Анализ ИИ:*\n\n{ai_analysis}", "parse_mode": "Markdown"})
 
-                # Обновляем локальный словарь строки (подготовка к записи)
+                # Обновляем локальную строку (подготовка списка)
                 row['title'], row['summary'], row['description'] = new_t, new_s, new_d
                 row['icon'], row['header_image'] = new_icon, new_header
                 row['screenshots'] = json.dumps(new_scr, ensure_ascii=False)
@@ -131,30 +145,27 @@ def check_apps():
                 row['history'] = json.dumps(history[-5:], ensure_ascii=False)
                 
             else:
-                print(f"    ✅ {p_id}: Ок")
                 current_log.append({"time": get_minsk_time(), "status": "🟢 Авто: Без изменений"})
-                # Тихое обновление если не было графики
                 if (not old_icon or old_icon == 'nan') and new_icon:
                     row['icon'], row['header_image'], row['screenshots'] = new_icon, new_header, json.dumps(new_scr, ensure_ascii=False)
 
             row['check_log'] = json.dumps(current_log[-5:], ensure_ascii=False)
 
-            # --- ФИНАЛЬНЫЙ ПАКЕТНЫЙ ПУШ СТРОКИ (Write 1/1) ---
+            # --- ПАКЕТНОЕ ОБНОВЛЕНИЕ СТРОКИ ---
             new_row_list = [row.get(h, "") for h in headers]
-            # Формируем диапазон A{номер}:Z{номер}
             range_name = f"A{i}:{gspread.utils.rowcol_to_a1(i, len(headers))}"
             worksheet.update(range_name, [new_row_list])
-            
-            time.sleep(0.6) # Пауза, чтобы Google не ругался на скорость
+            time.sleep(0.6) # Пауза против ошибки 429
 
         except Exception as e:
             print(f"    ❌ Ошибка {p_id}: {e}")
 
-    # Резюме пользователям
+    # Финальное резюме
     for c_id, stats in user_stats.items():
         if stats['updated'] > 0:
-            requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
-                          data={"chat_id": c_id, "text": f"⚙️ Авто-проверка: {stats['checked']} прил., {stats['updated']} изм."})
+            report = (f"⚙️ Системный авто-отчет\n⏰ {get_minsk_time()}\n"
+                      f"📦 Проверено: {stats['checked']}\n⚠️ Обновлено: {stats['updated']}")
+            requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": c_id, "text": report})
 
 if __name__ == "__main__":
     check_apps()
