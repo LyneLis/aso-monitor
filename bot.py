@@ -30,8 +30,11 @@ Analysis Algorithm:
 5. Impact Prediction: Прогноз влияния на видимость и CR.
 
 Output Format:
-- Summary: 1 предложение.
-- Keyword Migration Table: [Удалено] | [Добавлено] | [Приоритезировано].
+- Summary: Краткий вывод (1 предложение о векторе стратегии).
+- Keywords Migration:
+  Удалено: список через запятую
+  Добавлено: список через запятую
+  Приоритезировано: список через запятую
 - Strategic Shift: Описание изменений.
 - Threat Level: High/Medium/Low.
 - Action Plan: 3 конкретных шага.
