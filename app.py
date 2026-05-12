@@ -77,9 +77,8 @@ def analyze_changes_with_ai(old_t, new_t, old_s, new_s, old_d, new_d):
             
     return f"❌ Ошибка ИИ-анализа: {last_error}"
 
-# Словарь локалей
-GP_LOCALES = {
-    "": "Начните вводить локаль (напр. Russian или ru-RU)...",
+# Словарь локалей (очищенный от пустого значения для мультиселекта)
+GP_LOCALES_RAW = {
     "af": "Afrikaans", "am": "Amharic", "ar": "Arabic", "az-AZ": "Azerbaijani (Azerbaijan)",
     "be": "Belarusian", "bg": "Bulgarian", "bn-BD": "Bengali (Bangladesh)", "ca": "Catalan",
     "cs-CZ": "Czech (Czech Republic)", "da-DK": "Danish (Denmark)", "de-DE": "German (Germany)",
@@ -205,102 +204,102 @@ def save_data(data):
         return True
     except: return False
 
+# --- УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ПРОВЕРКИ ---
+def run_check_for_item(key, info, user_reports_dict, single_mode=False):
+    updates = 0
+    changed = []
+    try:
+        new_m = fetch_gp_data(info['package_id'], info['geo'])
+        log_entry = {"time": get_minsk_time(), "status": "🟢 Ок"}
+        old = info['current']
+
+        new_icon = new_m.get('icon', '')
+        new_scr = new_m.get('screenshots', [])
+
+        if new_m['title'] != old['title']: changed.append("Title")
+        if new_m['summary'] != old['summary']: changed.append("SD")
+        if new_m['description'] != old['description']: changed.append("FD")
+
+        if old.get('icon') and new_icon != old['icon']: changed.append("Иконка")
+        if old.get('screenshots') and new_scr != old.get('screenshots'): changed.append("Скриншоты")
+
+        if changed:
+            updates = 1
+            c_id = info['chat_id']
+
+            is_rollback = False
+            for past in info['history']:
+                if new_m['title'] == past.get('title') and new_m['summary'] == past.get('summary') and new_m['description'] == past.get('description'):
+                    is_rollback = True
+                    break
+
+            msg_prefix = "🔄 ОТКАТ (A/B ТЕСТ)" if is_rollback else "⚠️ ИЗМЕНЕНИЕ"
+            alert_msg = f"{msg_prefix} [{info['geo'].upper()}]\n📦 {new_m['title']}\nИзменено: {', '.join(changed)}"
+
+            if is_rollback: alert_msg += "\n\n⚠️ Тексты вернулись к одной из прошлых версий. Вероятно, A/B тест завершен."
+            if "Иконка" in changed: alert_msg += f"\n\n🖼 Новая иконка: {new_icon}"
+
+            send_telegram_msg(alert_msg, c_id)
+
+            text_changed = any(k in changed for k in ["Title", "SD", "FD"])
+            if text_changed:
+                report_content = (
+                    f"ОТЧЕТ ОБ ИЗМЕНЕНИЯХ (Ручная проверка)\nДата: {get_minsk_time()}\nПриложение: {info['package_id']}\nЛокаль: {info['geo']}\n"
+                    f"{'='*30}\n\n--- СТАРОЕ НАЗВАНИЕ ---\n{old['title']}\n\n--- НОВОЕ НАЗВАНИЕ ---\n{new_m['title']}\n\n"
+                    f"{'-'*30}\n--- СТАРЫЙ SD ---\n{old['summary']}\n\n--- НОВЫЙ SD ---\n{new_m['summary']}\n\n"
+                    f"{'-'*30}\n--- СТАРЫЙ FD ---\n{old['description']}\n\n--- НОВЫЙ FD ---\n{new_m['description']}\n"
+                )
+                
+                # Если проверяем 1 локаль - кидаем файл сразу. Если группу - копим в словарь.
+                if single_mode:
+                    send_telegram_file(report_content, f"report_{info['package_id']}.txt", f"📄 Детальный отчет: {info['package_id']}", c_id)
+                else:
+                    user_reports_dict.setdefault(c_id, "--- ASO MANUAL REPORT (FROM SITE) ---\n\n")
+                    user_reports_dict[c_id] += report_content
+
+                ai_analysis = analyze_changes_with_ai(old['title'], new_m['title'], old['summary'], new_m['summary'], old['description'], new_m['description'])
+                ai_msg = f"🤖 *Анализ стратегии от ИИ (Сайт):*\n\n{ai_analysis}"
+                send_telegram_msg(ai_msg, c_id, use_markdown=True)
+
+            info['history'].append(info['current'])
+            info['current'] = {
+                "title": new_m['title'], "summary": new_m['summary'], "description": new_m['description'],
+                "icon": new_icon, "screenshots": new_scr
+            }
+            log_entry["status"] = f"🔴 Изменение ({', '.join(changed)})"
+        else:
+            if not old.get('icon') and new_icon:
+                info['current']['icon'] = new_icon
+                info['current']['screenshots'] = new_scr
+
+        info.setdefault('check_log', []).append(log_entry)
+        info['check_log'] = info['check_log'][-5:]
+    except Exception as e:
+        print(f"Ошибка проверки {key}: {e}")
+        log_entry = {"time": get_minsk_time(), "status": f"❌ Ошибка"}
+        info.setdefault('check_log', []).append(log_entry)
+        info['check_log'] = info['check_log'][-5:]
+
+    return updates, changed
+
+
+# --- ИНТЕРФЕЙС ---
 st.title("🚀 ASO Monitor PRO")
 db = load_data()
 
-# 🔍 ГЛАВНАЯ КНОПКА ПРОВЕРКИ
-if st.button("🔍 Проверить все приложения сейчас"):
-    with st.spinner("Сверка со стором и анализ ИИ..."):
+# 🔍 ГЛАВНАЯ КНОПКА (Все приложения)
+if st.button("🔍 Проверить вообще всё", type="primary"):
+    with st.spinner("Тотальная проверка стора и анализ ИИ..."):
         updates_count = 0
         user_reports = {} 
         
         for key, info in db.items():
-            try:
-                new_m = fetch_gp_data(info['package_id'], info['geo'])
-                log_entry = {"time": get_minsk_time(), "status": "🟢 Ручная: Без изменений"}
-                changed = []
-                
-                old = info['current']
-                new_icon = new_m.get('icon', '')
-                new_scr = new_m.get('screenshots', [])
-                
-                # Проверка текстов
-                if new_m['title'] != old['title']: changed.append("Title")
-                if new_m['summary'] != old['summary']: changed.append("SD")
-                if new_m['description'] != old['description']: changed.append("FD")
-
-                # Проверка визуала (только если он уже был в базе, чтобы избежать спама при первом запуске)
-                if old.get('icon') and new_icon != old['icon']: changed.append("Иконка")
-                if old.get('screenshots') and new_scr != old.get('screenshots'): changed.append("Скриншоты")
-
-                if changed:
-                    updates_count += 1
-                    c_id = info['chat_id']
-                    
-                    # --- Детектор A/B тестов (Откатов) ---
-                    is_rollback = False
-                    for past in info['history']:
-                        if new_m['title'] == past.get('title') and new_m['summary'] == past.get('summary') and new_m['description'] == past.get('description'):
-                            is_rollback = True
-                            break
-
-                    msg_prefix = "🔄 ОТКАТ (A/B ТЕСТ)" if is_rollback else "⚠️ ИЗМЕНЕНИЕ"
-                    alert_msg = f"{msg_prefix} [{info['geo'].upper()}]\n📦 {new_m['title']}\nИзменено: {', '.join(changed)}"
-                    
-                    if is_rollback:
-                        alert_msg += "\n\n⚠️ Тексты вернулись к одной из прошлых версий. Вероятно, A/B тест завершен."
-                    if "Иконка" in changed:
-                        alert_msg += f"\n\n🖼 Новая иконка: {new_icon}"
-
-                    # 1. Уведомление
-                    send_telegram_msg(alert_msg, c_id)
-
-                    text_changed = any(k in changed for k in ["Title", "SD", "FD"])
-                    
-                    # 2. Файл с текстами (Только если менялись тексты)
-                    if text_changed:
-                        report_entry = (
-                            f"📦 [{info['geo'].upper()}] {info['package_id']}\n"
-                            f"ИЗМЕНЕНО: {', '.join(changed)}\n\n"
-                            f"--- OLD TITLE ---\n{old['title']}\n"
-                            f"--- NEW TITLE ---\n{new_m['title']}\n\n"
-                            f"--- OLD SD ---\n{old['summary']}\n"
-                            f"--- NEW SD ---\n{new_m['summary']}\n\n"
-                            f"--- OLD FD ---\n{old['description']}\n"
-                            f"--- NEW FD ---\n{new_m['description']}\n"
-                            f"{'='*30}\n\n"
-                        )
-                        user_reports.setdefault(c_id, "--- ASO MANUAL REPORT (FROM SITE) ---\n\n")
-                        user_reports[c_id] += report_entry
-                        
-                        # 3. ИИ Анализ
-                        ai_analysis = analyze_changes_with_ai(old['title'], new_m['title'], old['summary'], new_m['summary'], old['description'], new_m['description'])
-                        ai_msg = f"🤖 *Анализ стратегии от ИИ:*\n\n{ai_analysis}"
-                        send_telegram_msg(ai_msg, c_id, use_markdown=True)
-                    
-                    # 4. Обновление
-                    info['history'].append(info['current'])
-                    info['current'] = {
-                        "title": new_m['title'], "summary": new_m['summary'], "description": new_m['description'],
-                        "icon": new_icon, "screenshots": new_scr
-                    }
-                    log_entry["status"] = f"🔴 Ручная: Изменение ({', '.join(changed)})"
-                
-                else:
-                    # ТИХОЕ ОБНОВЛЕНИЕ: Если визуалов не было, просто сохраняем их без алертов
-                    if not old.get('icon') and new_icon:
-                        info['current']['icon'] = new_icon
-                        info['current']['screenshots'] = new_scr
-
-                info.setdefault('check_log', []).append(log_entry)
-                info['check_log'] = info['check_log'][-5:] # Оставляем 5 последних
-            except Exception as e: 
-                print(f"Ошибка проверки {key}: {e}")
-                pass
+            u, _ = run_check_for_item(key, info, user_reports, single_mode=False)
+            updates_count += u
         
         if updates_count > 0:
             for c_id, rep_text in user_reports.items():
-                send_telegram_file(rep_text, "manual_aso_report.txt", f"📊 Ручная проверка: найдено {updates_count} текстовых изменений.", c_id)
+                send_telegram_file(rep_text, "global_aso_report.txt", f"📊 Массовая проверка: найдено {updates_count} изменений.", c_id)
             st.success(f"Проверка окончена. Найдено изменений: {updates_count}. Отчеты отправлены!")
         else:
             st.info("Изменений не обнаружено. (Новые визуалы инициализированы, если их не было)")
@@ -308,18 +307,18 @@ if st.button("🔍 Проверить все приложения сейчас")
         save_data(db)
         st.rerun()
 
-# ➕ БОКОВАЯ ПАНЕЛЬ
+# ➕ БОКОВАЯ ПАНЕЛЬ (Мульти-добавление)
 with st.sidebar:
     st.header("➕ Добавить приложение")
-    
     st.info("Чтобы получать уведомления, сначала напишите боту.")
     st.link_button("➕ Добавить бота", "https://t.me/aso_omg_bot", use_container_width=True)
-    
     st.divider()
     
     new_id = st.text_input("Package ID", placeholder="com.example.app").strip()
-    selected_name = st.selectbox("Локаль Google Play", options=list(GP_LOCALES.values()), index=0)
-    new_geo = [k for k, v in GP_LOCALES.items() if v == selected_name][0]
+    
+    # Мультиселект локалей
+    selected_names = st.multiselect("Выберите локали (можно несколько)", options=list(GP_LOCALES_RAW.values()), default=["English (United States)"])
+    new_geos = [k for k, v in GP_LOCALES_RAW.items() if v in selected_names]
     
     if users_dict:
         user_name = st.selectbox("Пользователь", options=["Выбрать..."] + list(users_dict.keys()))
@@ -328,129 +327,108 @@ with st.sidebar:
         user_name = "Выбрать..."
 
     if st.button("Добавить в мониторинг", type="primary", use_container_width=True):
-        if new_id and new_geo != "" and user_name != "Выбрать...":
+        if new_id and new_geos and user_name != "Выбрать...":
             selected_chat_id = users_dict[user_name]
-            u_key = f"{new_id}_{new_geo}_{selected_chat_id}"
+            success_added = 0
             
-            if u_key in db: 
-                st.warning("Уже отслеживается этим пользователем!")
-            else:
-                success = False
-                with st.spinner(f"Загрузка {new_geo}..."):
-                    try:
-                        res = fetch_gp_data(new_id, new_geo)
-                        db[u_key] = {
-                            "package_id": new_id, "geo": new_geo, "chat_id": str(selected_chat_id),
-                            "current": {
-                                "title": res['title'], "summary": res['summary'], "description": res['description'],
-                                "icon": res.get('icon', ''), "screenshots": res.get('screenshots', [])
-                            },
-                            "history": [], "check_log": [{"time": get_minsk_time(), "status": "🆕 Добавлено"}]
-                        }
-                        if save_data(db):
-                            success = True
-                    except Exception:
-                        st.error("Ошибка: Приложение не найдено в этой локали.")
-                
-                if success:
-                    st.success(f"Добавлено для: {user_name}")
-                    st.rerun()
-        else:
-            st.warning("Заполните ID, выберите локаль и пользователя!")
-
-# 📦 СПИСОК ПРИЛОЖЕНИЙ
-for key, info in db.items():
-    col_exp, col_del = st.columns([11, 1])
-    with col_exp:
-        owner_name = next((name for name, cid in users_dict.items() if str(cid) == str(info.get('chat_id', ''))), "Неизвестно")
-        with st.expander(f"📦 [{info['geo']}] {info['current']['title']} | Пользователь: {owner_name}"):
-            if st.button("Проверить", key=f"ch_{key}"):
-                with st.spinner("Проверка со стором..."):
-                    try:
-                        new_m = fetch_gp_data(info['package_id'], info['geo'])
-                        log_entry = {"time": get_minsk_time(), "status": "🟢 Ручная: Ок"}
-                        changed = []
-                        old = info['current']
-                        
-                        new_icon = new_m.get('icon', '')
-                        new_scr = new_m.get('screenshots', [])
-                        
-                        if new_m['title'] != old['title']: changed.append("Title")
-                        if new_m['summary'] != old['summary']: changed.append("SD")
-                        if new_m['description'] != old['description']: changed.append("FD")
-                        
-                        if old.get('icon') and new_icon != old['icon']: changed.append("Иконка")
-                        if old.get('screenshots') and new_scr != old.get('screenshots'): changed.append("Скриншоты")
-                        
-                        if changed:
-                            is_rollback = False
-                            for past in info['history']:
-                                if new_m['title'] == past.get('title') and new_m['summary'] == past.get('summary') and new_m['description'] == past.get('description'):
-                                    is_rollback = True
-                                    break
-
-                            msg_prefix = "🔄 ОТКАТ (A/B ТЕСТ)" if is_rollback else "⚠️ ИЗМЕНЕНИЕ"
-                            alert_msg = f"{msg_prefix} [{info['geo'].upper()}]\n📦 {new_m['title']}\nИзменено: {', '.join(changed)}"
-                            
-                            if is_rollback:
-                                alert_msg += "\n\n⚠️ Тексты вернулись к одной из прошлых версий. Вероятно, A/B тест завершен."
-                            if "Иконка" in changed:
-                                alert_msg += f"\n\n🖼 Новая иконка: {new_icon}"
-
-                            send_telegram_msg(alert_msg, info['chat_id'])
-                            
-                            text_changed = any(k in changed for k in ["Title", "SD", "FD"])
-                            if text_changed:
-                                report_content = (
-                                    f"ОТЧЕТ ОБ ИЗМЕНЕНИЯХ (Ручная проверка)\nДата: {get_minsk_time()}\nПриложение: {info['package_id']}\nЛокаль: {info['geo']}\n"
-                                    f"{'='*30}\n\n--- СТАРОЕ НАЗВАНИЕ ---\n{old['title']}\n\n--- НОВОЕ НАЗВАНИЕ ---\n{new_m['title']}\n\n"
-                                    f"{'-'*30}\n--- СТАРЫЙ SD ---\n{old['summary']}\n\n--- НОВЫЙ SD ---\n{new_m['summary']}\n\n"
-                                    f"{'-'*30}\n--- СТАРЫЙ FD ---\n{old['description']}\n\n--- НОВЫЙ FD ---\n{new_m['description']}\n"
-                                )
-                                send_telegram_file(report_content, f"report_{info['package_id']}.txt", f"📄 Детальный отчет: {info['package_id']}", info['chat_id'])
-
-                                ai_analysis = analyze_changes_with_ai(old['title'], new_m['title'], old['summary'], new_m['summary'], old['description'], new_m['description'])
-                                ai_msg = f"🤖 *Анализ стратегии от ИИ:*\n\n{ai_analysis}"
-                                send_telegram_msg(ai_msg, info['chat_id'], use_markdown=True)
-                            
-                            info['history'].append(info['current'])
-                            info['current'] = {
-                                "title": new_m['title'], "summary": new_m['summary'], "description": new_m['description'],
-                                "icon": new_icon, "screenshots": new_scr
+            with st.spinner(f"Загрузка локалей ({len(new_geos)} шт.)..."):
+                for geo in new_geos:
+                    u_key = f"{new_id}_{geo}_{selected_chat_id}"
+                    if u_key in db: 
+                        st.warning(f"[{geo}] Уже отслеживается!")
+                    else:
+                        try:
+                            res = fetch_gp_data(new_id, geo)
+                            db[u_key] = {
+                                "package_id": new_id, "geo": geo, "chat_id": str(selected_chat_id),
+                                "current": {
+                                    "title": res['title'], "summary": res['summary'], "description": res['description'],
+                                    "icon": res.get('icon', ''), "screenshots": res.get('screenshots', [])
+                                },
+                                "history": [], "check_log": [{"time": get_minsk_time(), "status": "🆕 Добавлено"}]
                             }
-                            log_entry["status"] = f"🔴 Ручная: Изменение ({', '.join(changed)})"
-                            st.success(f"Обновлено: {', '.join(changed)}. Отчеты отправлены.")
-                        else:
-                            st.info("Без изменений.")
-                            if not old.get('icon') and new_icon:
-                                info['current']['icon'] = new_icon
-                                info['current']['screenshots'] = new_scr
-                        
-                        info.setdefault('check_log', []).append(log_entry)
-                        info['check_log'] = info['check_log'][-5:]
+                            success_added += 1
+                        except Exception:
+                            st.error(f"Ошибка: {geo} не найдено.")
+                
+            if success_added > 0:
+                save_data(db)
+                st.success(f"Успешно добавлено локалей: {success_added}")
+                st.rerun()
+        else:
+            st.warning("Заполните ID, выберите локали и пользователя!")
+
+# --- ГРУППИРОВКА ПРИЛОЖЕНИЙ ДЛЯ ВЫВОДА ---
+grouped_apps = {}
+for key, info in db.items():
+    grp = (info['package_id'], info['chat_id'])
+    if grp not in grouped_apps: grouped_apps[grp] = []
+    grouped_apps[grp].append(key)
+
+# 📦 ВЫВОД КАРТОЧЕК
+for (pkg_id, chat_id), keys in grouped_apps.items():
+    owner_name = next((name for name, cid in users_dict.items() if str(cid) == str(chat_id)), "Неизвестно")
+    first_info = db[keys[0]]
+    main_title = first_info['current']['title']
+    main_icon = first_info['current'].get('icon')
+
+    with st.expander(f"📦 {main_title} ({pkg_id}) | 👤 {owner_name} | 🌍 Локалей: {len(keys)}"):
+        col_img, col_btn = st.columns([1, 6])
+        
+        with col_img:
+            if main_icon: st.image(main_icon, width=80)
+            
+        with col_btn:
+            if st.button(f"🔍 Проверить все локали ({len(keys)} шт.)", key=f"ch_grp_{pkg_id}_{chat_id}"):
+                with st.spinner("Сверка всей группы со стором..."):
+                    user_reports = {}
+                    upd = 0
+                    for k in keys:
+                        u, _ = run_check_for_item(k, db[k], user_reports, single_mode=False)
+                        upd += u
+                    if upd > 0:
+                        for c_id, rep_text in user_reports.items():
+                            send_telegram_file(rep_text, f"group_report_{pkg_id}.txt", f"📊 Проверка {pkg_id}: найдено {upd} изм.", c_id)
+                        st.success(f"Обновлено локалей: {upd}. Отчеты отправлены.")
+                    else:
+                        st.info("Группа проверена. Без изменений.")
+                    save_data(db)
+                    st.rerun()
+
+        st.markdown("---")
+        
+        # Создаем вкладки для локалей внутри карточки
+        locale_labels = [GP_LOCALES_RAW.get(db[k]['geo'], db[k]['geo']) for k in keys]
+        tabs = st.tabs(locale_labels)
+        
+        for i, k in enumerate(keys):
+            info = db[k]
+            with tabs[i]:
+                col_info, col_del = st.columns([5, 1])
+                with col_info:
+                    st.write(f"**Локаль:** `{info['geo']}`")
+                    
+                    if st.button("Проверить только эту локаль", key=f"ch_sng_{k}"):
+                        with st.spinner("Проверка одной локали..."):
+                            user_reports = {} 
+                            u, c = run_check_for_item(k, info, user_reports, single_mode=True)
+                            if u > 0: st.success(f"Обновлено: {', '.join(c)}. Отчет отправлен.")
+                            else: st.info("Без изменений.")
+                            save_data(db)
+                            st.rerun()
+
+                    if info['history']:
+                        st.warning("⚠️ Есть старые версии!")
+                        rep = f"БЫЛО:\n{info['history'][-1]}\n\nСТАЛО:\n{info['current']}"
+                        st.download_button(label="📥 Скачать текстовую историю", data=rep, file_name=f"aso_{k}.txt", key=f"dl_{k}")
+                    
+                    st.markdown("🕒 **История проверок:**")
+                    if info.get('check_log'):
+                        for log in reversed(info['check_log']):
+                            st.text(f"[{log['time']}] {log['status']}")
+                
+                with col_del:
+                    if st.button("🗑️ Удалить локаль", key=f"del_{k}"):
+                        del db[k]
                         save_data(db)
                         st.rerun()
-                    except Exception as e:
-                        st.error(f"Ошибка связи со стором: {e}")
-
-            st.write(f"**ID:** {info['package_id']}")
-            st.write(f"**Локаль:** {GP_LOCALES.get(info['geo'], info['geo'])}")
-            if info['current'].get('icon'):
-                st.image(info['current']['icon'], width=64)
-            
-            if info['history']:
-                st.warning("⚠️ Есть старые версии!")
-                rep = f"БЫЛО:\n{info['history'][-1]}\n\nСТАЛО:\n{info['current']}"
-                st.download_button(label="📥 Скачать отчет", data=rep, file_name=f"aso_{key}.txt", key=f"dl_{key}")
-            
-            st.markdown("---")
-            st.markdown("🕒 **История проверок (Минск):**")
-            if info.get('check_log'):
-                for log in reversed(info['check_log']):
-                    st.text(f"[{log['time']}] {log['status']}")
-            
-    with col_del:
-        if st.button("🗑️", key=f"del_{key}"):
-            del db[key]
-            save_data(db)
-            st.rerun()
