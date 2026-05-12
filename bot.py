@@ -143,6 +143,7 @@ def check_apps():
             old_s = str(row.get('summary', '')).strip()
             old_d = str(row.get('description', '')).strip()
             old_icon = str(row.get('icon', '')).strip()
+            old_header = str(row.get('header_image', '')).strip() # ВАЖНО: Парсим старый FG
             
             try: old_scr = json.loads(str(row.get('screenshots', '[]')).strip())
             except: old_scr = []
@@ -151,6 +152,7 @@ def check_apps():
             new_s = str(res['summary']).strip()
             new_d = str(res['description']).strip()
             new_icon = str(res.get('icon', '')).strip()
+            new_header = str(res.get('headerImage', '')).strip() # ВАЖНО: Парсим новый FG
             new_scr = res.get('screenshots', [])
 
             changes = []
@@ -161,6 +163,7 @@ def check_apps():
             
             # Проверка визуала (только если он уже был в базе)
             if old_icon and old_icon != 'nan' and new_icon != old_icon: changes.append("Иконка")
+            if old_header and old_header != 'nan' and new_header != old_header: changes.append("Feature Graphic") # ВАЖНО: Проверка FG
             if old_scr and new_scr != old_scr: changes.append("Скриншоты")
 
             if changes:
@@ -184,6 +187,8 @@ def check_apps():
                         alert_msg += "\n\n⚠️ Тексты вернулись к одной из прошлых версий."
                     if "Иконка" in changes:
                         alert_msg += f"\n\n🖼 Новая иконка: {new_icon}"
+                    if "Feature Graphic" in changes:
+                        alert_msg += f"\n\n🎬 Новый баннер: {new_header}"
 
                     # 1. Telegram: Уведомление
                     requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": c_id, "text": alert_msg})
@@ -226,6 +231,7 @@ def check_apps():
                 
                 # Обновляем графику
                 if "icon" in col_map: worksheet.update_cell(row_number, col_map["icon"], new_icon)
+                if "header_image" in col_map: worksheet.update_cell(row_number, col_map["header_image"], new_header) # ВАЖНО: Обновляем FG
                 if "screenshots" in col_map: worksheet.update_cell(row_number, col_map["screenshots"], json.dumps(new_scr, ensure_ascii=False))
 
             else:
@@ -233,10 +239,16 @@ def check_apps():
                 current_log.append({"time": get_minsk_time(), "status": "🟢 Авто: Без изменений"})
                 
                 # Тихое обновление графики (инициализация старой базы)
-                has_no_old_icon = not old_icon or old_icon == 'nan'
-                if has_no_old_icon and new_icon:
+                updated_silently = False
+                if (not old_icon or old_icon == 'nan') and new_icon:
                     if "icon" in col_map: worksheet.update_cell(row_number, col_map["icon"], new_icon)
+                    updated_silently = True
+                if (not old_header or old_header == 'nan') and new_header:
+                    if "header_image" in col_map: worksheet.update_cell(row_number, col_map["header_image"], new_header)
+                    updated_silently = True
+                if (not old_scr or len(old_scr) == 0) and new_scr:
                     if "screenshots" in col_map: worksheet.update_cell(row_number, col_map["screenshots"], json.dumps(new_scr, ensure_ascii=False))
+                    updated_silently = True
 
             if "check_log" in col_map:
                 current_log = current_log[-5:]

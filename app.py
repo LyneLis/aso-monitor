@@ -179,6 +179,7 @@ def load_data():
                     "summary": str(row['summary']), 
                     "description": str(row['description']),
                     "icon": str(row.get('icon', '')),
+                    "header_image": str(row.get('header_image', '')), # ВАЖНО: Добавлено поле FG
                     "screenshots": json.loads(row['screenshots']) if 'screenshots' in df.columns and isinstance(row.get('screenshots'), str) else []
                 },
                 "history": json.loads(row['history']) if 'history' in df.columns and isinstance(row['history'], str) else [],
@@ -196,6 +197,7 @@ def save_data(data):
                 "package_id": info['package_id'], "geo": info['geo'], "chat_id": info.get('chat_id', ''),
                 "title": info['current']['title'], "summary": info['current']['summary'], "description": info['current']['description'],
                 "icon": info['current'].get('icon', ''),
+                "header_image": info['current'].get('header_image', ''), # ВАЖНО: Сохраняем FG
                 "screenshots": json.dumps(info['current'].get('screenshots', []), ensure_ascii=False),
                 "history": json.dumps(info['history'], ensure_ascii=False),
                 "check_log": json.dumps(info.get('check_log', []), ensure_ascii=False)
@@ -214,6 +216,7 @@ def run_check_for_item(key, info, user_reports_dict, single_mode=False):
         old = info['current']
 
         new_icon = new_m.get('icon', '')
+        new_header = new_m.get('headerImage', '') # ВАЖНО: Парсим FG
         new_scr = new_m.get('screenshots', [])
 
         if new_m['title'] != old['title']: changed.append("Title")
@@ -221,6 +224,7 @@ def run_check_for_item(key, info, user_reports_dict, single_mode=False):
         if new_m['description'] != old['description']: changed.append("FD")
 
         if old.get('icon') and new_icon != old['icon']: changed.append("Иконка")
+        if old.get('header_image') and new_header != old.get('header_image'): changed.append("Feature Graphic") # ВАЖНО: Проверка FG
         if old.get('screenshots') and new_scr != old.get('screenshots'): changed.append("Скриншоты")
 
         if changed:
@@ -238,6 +242,7 @@ def run_check_for_item(key, info, user_reports_dict, single_mode=False):
 
             if is_rollback: alert_msg += "\n\n⚠️ Тексты вернулись к одной из прошлых версий. Вероятно, A/B тест завершен."
             if "Иконка" in changed: alert_msg += f"\n\n🖼 Новая иконка: {new_icon}"
+            if "Feature Graphic" in changed: alert_msg += f"\n\n🎬 Новый баннер: {new_header}"
 
             send_telegram_msg(alert_msg, c_id)
 
@@ -264,13 +269,21 @@ def run_check_for_item(key, info, user_reports_dict, single_mode=False):
             info['history'].append(info['current'])
             info['current'] = {
                 "title": new_m['title'], "summary": new_m['summary'], "description": new_m['description'],
-                "icon": new_icon, "screenshots": new_scr
+                "icon": new_icon, "header_image": new_header, "screenshots": new_scr
             }
             log_entry["status"] = f"🔴 Изменение ({', '.join(changed)})"
         else:
+            # ТИХОЕ ОБНОВЛЕНИЕ
+            updated_silently = False
             if not old.get('icon') and new_icon:
                 info['current']['icon'] = new_icon
+                updated_silently = True
+            if not old.get('header_image') and new_header:
+                info['current']['header_image'] = new_header
+                updated_silently = True
+            if not old.get('screenshots') and new_scr:
                 info['current']['screenshots'] = new_scr
+                updated_silently = True
 
         info.setdefault('check_log', []).append(log_entry)
         info['check_log'] = info['check_log'][-5:]
@@ -343,7 +356,7 @@ with st.sidebar:
                                 "package_id": new_id, "geo": geo, "chat_id": str(selected_chat_id),
                                 "current": {
                                     "title": res['title'], "summary": res['summary'], "description": res['description'],
-                                    "icon": res.get('icon', ''), "screenshots": res.get('screenshots', [])
+                                    "icon": res.get('icon', ''), "header_image": res.get('headerImage', ''), "screenshots": res.get('screenshots', [])
                                 },
                                 "history": [], "check_log": [{"time": get_minsk_time(), "status": "🆕 Добавлено"}]
                             }
@@ -371,12 +384,16 @@ for (pkg_id, chat_id), keys in grouped_apps.items():
     first_info = db[keys[0]]
     main_title = first_info['current']['title']
     main_icon = first_info['current'].get('icon')
+    main_header = first_info['current'].get('header_image') # Достаем FG для главной карточки
 
     with st.expander(f"📦 {main_title} ({pkg_id}) | 👤 {owner_name} | 🌍 Локалей: {len(keys)}"):
-        col_img, col_btn = st.columns([1, 6])
+        col_img, col_header, col_btn = st.columns([1, 2, 4])
         
         with col_img:
             if main_icon: st.image(main_icon, width=80)
+            
+        with col_header:
+            if main_header: st.image(main_header, width=160, caption="Feature Graphic") # Выводим FG
             
         with col_btn:
             if st.button(f"🔍 Проверить все локали ({len(keys)} шт.)", key=f"ch_grp_{pkg_id}_{chat_id}"):
