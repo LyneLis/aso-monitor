@@ -331,16 +331,25 @@ for key, info in db.items():
                             # 1. Уведомление
                             send_telegram_msg(f"⚠️ ИЗМЕНЕНИЕ [{info['geo'].upper()}]\n{new_m['title']}\nИзменено: {', '.join(changed)}", info['chat_id'])
                             
-                            # 2. ИИ Анализ
+                            # 2. Файл с полными текстами (ДОБАВЛЕНО)
+                            report_content = (
+                                f"ОТЧЕТ ОБ ИЗМЕНЕНИЯХ (Ручная проверка)\nДата: {get_minsk_time()}\nПриложение: {info['package_id']}\nЛокаль: {info['geo']}\n"
+                                f"{'='*30}\n\n--- СТАРОЕ НАЗВАНИЕ ---\n{old['title']}\n\n--- НОВОЕ НАЗВАНИЕ ---\n{new_m['title']}\n\n"
+                                f"{'-'*30}\n--- СТАРЫЙ SD ---\n{old['summary']}\n\n--- НОВЫЙ SD ---\n{new_m['summary']}\n\n"
+                                f"{'-'*30}\n--- СТАРЫЙ FD ---\n{old['description']}\n\n--- НОВЫЙ FD ---\n{new_m['description']}\n"
+                            )
+                            send_telegram_file(report_content, f"report_{info['package_id']}.txt", f"📄 Детальный отчет: {info['package_id']}", info['chat_id'])
+
+                            # 3. ИИ Анализ
                             ai_analysis = analyze_changes_with_ai(old['title'], new_m['title'], old['summary'], new_m['summary'], old['description'], new_m['description'])
                             ai_msg = f"🤖 *Анализ стратегии от ИИ (Сайт):*\n\n{ai_analysis}"
                             send_telegram_msg(ai_msg, info['chat_id'], use_markdown=True)
                             
-                            # 3. Обновление
+                            # 4. Обновление
                             info['history'].append(info['current'])
                             info['current'] = {"title": new_m['title'], "summary": new_m['summary'], "description": new_m['description']}
                             log_entry["status"] = f"🔴 Ручная: Изменение ({', '.join(changed)})"
-                            st.success(f"Обновлено: {', '.join(changed)}. ИИ-отчет отправлен.")
+                            st.success(f"Обновлено: {', '.join(changed)}. Отчеты отправлены.")
                         else:
                             st.info("Без изменений.")
                         

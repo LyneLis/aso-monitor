@@ -49,14 +49,12 @@ def analyze_changes_with_ai(old_t, new_t, old_s, new_s, old_d, new_d):
     if not GEMINI_API_KEY:
         return "❌ Ключ Gemini API не найден."
     
-    # Собираем промпт
     full_prompt = (
         f"{ASO_PROMPT}\n\n"
         f"--- БЫЛО ---\nTitle: {old_t}\nShort Description: {old_s}\nFull Description: {old_d}\n\n"
         f"--- СТАЛО ---\nTitle: {new_t}\nShort Description: {new_s}\nFull Description: {new_d}"
     )
 
-    # Динамический поиск работающей модели (Актуально для 2026 года)
     available_models = []
     try:
         for m in genai.list_models():
@@ -65,16 +63,14 @@ def analyze_changes_with_ai(old_t, new_t, old_s, new_s, old_d, new_d):
     except Exception as e:
         print(f"⚠️ Не удалось получить список моделей: {e}")
 
-    # Приоритетный список моделей (от новых к старым)
     priority_list = [
         'models/gemini-3-flash', 
         'models/gemini-1.5-flash', 
         'models/gemini-1.5-pro'
     ]
     
-    # Формируем финальную очередь проверки
     models_to_try = [m for m in priority_list if m in available_models]
-    if not models_to_try: # Если список пуст, берем первую доступную из системы
+    if not models_to_try:
         models_to_try = available_models[:2] if available_models else priority_list
 
     last_error = ""
@@ -87,7 +83,6 @@ def analyze_changes_with_ai(old_t, new_t, old_s, new_s, old_d, new_d):
                 return response.text
         except Exception as e:
             last_error = str(e)
-            print(f"⚠️ Ошибка на {model_name}: {last_error}")
             continue 
             
     return f"❌ Ошибка ИИ-анализа: {last_error}. Проверьте доступность моделей в Google AI Studio."
@@ -99,12 +94,9 @@ def check_apps():
         gc = gspread.service_account_from_dict(service_account_info)
         sh = gc.open_by_url(SPREADSHEET_URL)
         worksheet = sh.get_worksheet(0) 
-        
         headers = worksheet.row_values(1)
         col_map = {name: i+1 for i, name in enumerate(headers)}
-        
         data = worksheet.get_all_records()
-        print(f"✅ Таблица загружена. Строк: {len(data)}")
     except Exception as e:
         print(f"❌ Ошибка API Таблиц: {e}")
         return
@@ -116,14 +108,16 @@ def check_apps():
         p_id = str(row.get('package_id', '')).strip()
         if not p_id or p_id == 'nan': continue
         
-        full_geo = str(row.get('geo', 'us')).strip()
+        # ЖЕСТКАЯ ПРОВЕРКА ВЛАДЕЛЬЦА: привязываем приложение строго к ID
         c_id = str(row.get('chat_id', '')).strip()
-        
-        if c_id not in user_stats:
-            user_stats[c_id] = {'checked': 0, 'updated': 0}
-        user_stats[c_id]['checked'] += 1
+        has_owner = bool(c_id and c_id.lower() != 'nan')
 
-        # Логика локалей (Мексика для es-419 и полные коды для остальных)
+        if has_owner:
+            if c_id not in user_stats:
+                user_stats[c_id] = {'checked': 0, 'updated': 0}
+            user_stats[c_id]['checked'] += 1
+
+        full_geo = str(row.get('geo', 'us')).strip()
         if full_geo == "es-419":
             l_code, c_code = "es-419", "MX"
         elif "-" in full_geo:
@@ -132,7 +126,6 @@ def check_apps():
         else:
             l_code, c_code = full_geo.lower(), full_geo.upper()
 
-        # Загрузка логов
         log_str = str(row.get('check_log', '[]')).strip()
         if not log_str or log_str == 'nan': log_str = '[]'
         try: current_log = json.loads(log_str)
@@ -156,39 +149,38 @@ def check_apps():
 
             if changes:
                 print(f"    ⚠️ Изменение в {p_id}. Запуск ИИ...")
-                user_stats[c_id]['updated'] += 1
                 current_log.append({"time": get_minsk_time(), "status": f"🔴 Авто: Изменение ({', '.join(changes)})"})
                 
-                # 1. Telegram: Уведомление
-                msg = f"🔔 АВТО-ИЗМЕНЕНИЕ! [{full_geo.upper()}]\n📦 {p_id}\n\nПоля: {', '.join(changes)}\nНазвание: {new_t}"
-                requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": c_id, "text": msg})
-                
-                # 2. Telegram: Файл отчета
-                report_content = (
-                    f"ОТЧЕТ ОБ ИЗМЕНЕНИЯХ\nДата: {get_minsk_time()}\nПриложение: {p_id}\nЛокаль: {full_geo}\n"
-                    f"{'='*30}\n\n--- СТАРОЕ НАЗВАНИЕ ---\n{old_t}\n\n--- НОВОЕ НАЗВАНИЕ ---\n{new_t}\n\n"
-                    f"{'-'*30}\n--- СТАРЫЙ SD ---\n{old_s}\n\n--- НОВЫЙ SD ---\n{new_s}\n\n"
-                    f"{'-'*30}\n--- СТАРЫЙ FD ---\n{old_d}\n\n--- НОВЫЙ FD ---\n{new_d}\n"
-                )
-                file_path = f"report_{p_id}.txt"
-                with open(file_path, "w", encoding="utf-8") as f: f.write(report_content)
-                with open(file_path, "rb") as f:
-                    requests.post(f"https://api.telegram.org/bot{TOKEN}/sendDocument", 
-                                 data={"chat_id": c_id, "caption": f"📄 Детальный отчет: {p_id}"}, files={"document": f})
-                os.remove(file_path)
+                # ОТПРАВКА ТОЛЬКО ЕСЛИ ЕСТЬ ВЛАДЕЛЕЦ
+                if has_owner:
+                    user_stats[c_id]['updated'] += 1
+                    
+                    # 1. Telegram: Уведомление
+                    msg = f"🔔 АВТО-ИЗМЕНЕНИЕ! [{full_geo.upper()}]\n📦 {p_id}\n\nПоля: {', '.join(changes)}\nНазвание: {new_t}"
+                    requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": c_id, "text": msg})
+                    
+                    # 2. Telegram: Файл отчета
+                    report_content = (
+                        f"ОТЧЕТ ОБ ИЗМЕНЕНИЯХ\nДата: {get_minsk_time()}\nПриложение: {p_id}\nЛокаль: {full_geo}\n"
+                        f"{'='*30}\n\n--- СТАРОЕ НАЗВАНИЕ ---\n{old_t}\n\n--- НОВОЕ НАЗВАНИЕ ---\n{new_t}\n\n"
+                        f"{'-'*30}\n--- СТАРЫЙ SD ---\n{old_s}\n\n--- НОВЫЙ SD ---\n{new_s}\n\n"
+                        f"{'-'*30}\n--- СТАРЫЙ FD ---\n{old_d}\n\n--- НОВЫЙ FD ---\n{new_d}\n"
+                    )
+                    file_path = f"report_{p_id}.txt"
+                    with open(file_path, "w", encoding="utf-8") as f: f.write(report_content)
+                    with open(file_path, "rb") as f:
+                        requests.post(f"https://api.telegram.org/bot{TOKEN}/sendDocument", 
+                                     data={"chat_id": c_id, "caption": f"📄 Детальный отчет: {p_id}"}, files={"document": f})
+                    os.remove(file_path)
 
-                # 3. Telegram: Анализ ИИ (С ЗАЩИТОЙ ОТ ПАДЕНИЙ MARKDOWN)
-                ai_analysis = analyze_changes_with_ai(old_t, new_t, old_s, new_s, old_d, new_d)
-                ai_msg = f"🤖 *Анализ стратегии от ИИ:*\n\n{ai_analysis}"
-                
-                # Сначала пробуем отправить с красивым форматированием
-                tg_response = requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
-                              data={"chat_id": c_id, "text": ai_msg, "parse_mode": "Markdown"})
-                
-                # Если Telegram отклонил сообщение (статус не 200 OK), отправляем как обычный текст
-                if tg_response.status_code != 200:
-                    requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
-                                  data={"chat_id": c_id, "text": ai_msg})
+                    # 3. Telegram: Анализ ИИ
+                    ai_analysis = analyze_changes_with_ai(old_t, new_t, old_s, new_s, old_d, new_d)
+                    ai_msg = f"🤖 *Анализ стратегии от ИИ:*\n\n{ai_analysis}"
+                    tg_response = requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
+                                  data={"chat_id": c_id, "text": ai_msg, "parse_mode": "Markdown"})
+                    if tg_response.status_code != 200:
+                        requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
+                                      data={"chat_id": c_id, "text": ai_msg})
 
                 # 4. Обновление таблицы
                 if "title" in col_map: worksheet.update_cell(row_number, col_map["title"], new_t)
@@ -210,7 +202,7 @@ def check_apps():
                 current_log = current_log[-5:]
                 worksheet.update_cell(row_number, col_map["check_log"], json.dumps(current_log, ensure_ascii=False))
 
-    # Финальное резюме
+    # Финальное резюме строго по ID пользователей
     for c_id, stats in user_stats.items():
         if stats['checked'] > 0 and stats['updated'] > 0:
             report = (f"⚙️ Системный авто-отчет\n⏰ {get_minsk_time()}\n"
