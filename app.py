@@ -77,7 +77,7 @@ def analyze_changes_with_ai(old_t, new_t, old_s, new_s, old_d, new_d):
             
     return f"❌ Ошибка ИИ-анализа: {last_error}"
 
-# Словарь локалей (очищенный от пустого значения для мультиселекта)
+# Словарь локалей
 GP_LOCALES_RAW = {
     "af": "Afrikaans", "am": "Amharic", "ar": "Arabic", "az-AZ": "Azerbaijani (Azerbaijan)",
     "be": "Belarusian", "bg": "Bulgarian", "bn-BD": "Bengali (Bangladesh)", "ca": "Catalan",
@@ -123,13 +123,14 @@ def get_minsk_time():
     return (datetime.utcnow() + timedelta(hours=3)).strftime("%d.%m.%Y %H:%M:%S")
 
 def fetch_gp_data(pkg_id, locale):
+    # ИСПРАВЛЕНО: Теперь код страны всегда в ВЕРХНЕМ РЕГИСТРЕ (ВАЖНО ДЛЯ ГРАФИКИ)
     if locale == "es-419":
-        l_code, c_code = "es-419", "mx" 
+        l_code, c_code = "es-419", "MX" 
     elif "-" in locale:
         l_code = locale 
-        c_code = locale.split("-")[1].lower() 
+        c_code = locale.split("-")[1].upper() 
     else:
-        l_code, c_code = locale.lower(), locale.lower()
+        l_code, c_code = locale.lower(), locale.upper()
         
     if l_code == "iw": l_code = "iw"
     return app(pkg_id, lang=l_code, country=c_code)
@@ -179,7 +180,7 @@ def load_data():
                     "summary": str(row['summary']), 
                     "description": str(row['description']),
                     "icon": str(row.get('icon', '')),
-                    "header_image": str(row.get('header_image', '')), # ВАЖНО: Добавлено поле FG
+                    "header_image": str(row.get('header_image', '')),
                     "screenshots": json.loads(row['screenshots']) if 'screenshots' in df.columns and isinstance(row.get('screenshots'), str) else []
                 },
                 "history": json.loads(row['history']) if 'history' in df.columns and isinstance(row['history'], str) else [],
@@ -197,7 +198,7 @@ def save_data(data):
                 "package_id": info['package_id'], "geo": info['geo'], "chat_id": info.get('chat_id', ''),
                 "title": info['current']['title'], "summary": info['current']['summary'], "description": info['current']['description'],
                 "icon": info['current'].get('icon', ''),
-                "header_image": info['current'].get('header_image', ''), # ВАЖНО: Сохраняем FG
+                "header_image": info['current'].get('header_image', ''),
                 "screenshots": json.dumps(info['current'].get('screenshots', []), ensure_ascii=False),
                 "history": json.dumps(info['history'], ensure_ascii=False),
                 "check_log": json.dumps(info.get('check_log', []), ensure_ascii=False)
@@ -206,7 +207,6 @@ def save_data(data):
         return True
     except: return False
 
-# --- УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ПРОВЕРКИ ---
 def run_check_for_item(key, info, user_reports_dict, single_mode=False):
     updates = 0
     changed = []
@@ -216,15 +216,15 @@ def run_check_for_item(key, info, user_reports_dict, single_mode=False):
         old = info['current']
 
         new_icon = new_m.get('icon', '')
-        new_header = new_m.get('headerImage', '') # ВАЖНО: Парсим FG
+        new_header = new_m.get('headerImage', '') 
         new_scr = new_m.get('screenshots', [])
 
         if new_m['title'] != old['title']: changed.append("Title")
         if new_m['summary'] != old['summary']: changed.append("SD")
         if new_m['description'] != old['description']: changed.append("FD")
 
-        if old.get('icon') and new_icon != old['icon']: changed.append("Иконка")
-        if old.get('header_image') and new_header != old.get('header_image'): changed.append("Feature Graphic") # ВАЖНО: Проверка FG
+        if old.get('icon') and old.get('icon') != 'nan' and new_icon != old['icon']: changed.append("Иконка")
+        if old.get('header_image') and old.get('header_image') != 'nan' and new_header != old.get('header_image'): changed.append("Feature Graphic")
         if old.get('screenshots') and new_scr != old.get('screenshots'): changed.append("Скриншоты")
 
         if changed:
@@ -255,7 +255,6 @@ def run_check_for_item(key, info, user_reports_dict, single_mode=False):
                     f"{'-'*30}\n--- СТАРЫЙ FD ---\n{old['description']}\n\n--- НОВЫЙ FD ---\n{new_m['description']}\n"
                 )
                 
-                # Если проверяем 1 локаль - кидаем файл сразу. Если группу - копим в словарь.
                 if single_mode:
                     send_telegram_file(report_content, f"report_{info['package_id']}.txt", f"📄 Детальный отчет: {info['package_id']}", c_id)
                 else:
@@ -273,17 +272,12 @@ def run_check_for_item(key, info, user_reports_dict, single_mode=False):
             }
             log_entry["status"] = f"🔴 Изменение ({', '.join(changed)})"
         else:
-            # ТИХОЕ ОБНОВЛЕНИЕ
-            updated_silently = False
-            if not old.get('icon') and new_icon:
+            if (not old.get('icon') or old.get('icon') == 'nan') and new_icon:
                 info['current']['icon'] = new_icon
-                updated_silently = True
-            if not old.get('header_image') and new_header:
+            if (not old.get('header_image') or old.get('header_image') == 'nan') and new_header:
                 info['current']['header_image'] = new_header
-                updated_silently = True
-            if not old.get('screenshots') and new_scr:
+            if (not old.get('screenshots') or len(old.get('screenshots', [])) == 0) and new_scr:
                 info['current']['screenshots'] = new_scr
-                updated_silently = True
 
         info.setdefault('check_log', []).append(log_entry)
         info['check_log'] = info['check_log'][-5:]
@@ -300,7 +294,7 @@ def run_check_for_item(key, info, user_reports_dict, single_mode=False):
 st.title("🚀 ASO Monitor PRO")
 db = load_data()
 
-# 🔍 ГЛАВНАЯ КНОПКА (Все приложения)
+# 🔍 ГЛАВНАЯ КНОПКА
 if st.button("🔍 Проверить вообще всё", type="primary"):
     with st.spinner("Тотальная проверка стора и анализ ИИ..."):
         updates_count = 0
@@ -320,7 +314,7 @@ if st.button("🔍 Проверить вообще всё", type="primary"):
         save_data(db)
         st.rerun()
 
-# ➕ БОКОВАЯ ПАНЕЛЬ (Мульти-добавление)
+# ➕ БОКОВАЯ ПАНЕЛЬ
 with st.sidebar:
     st.header("➕ Добавить приложение")
     st.info("Чтобы получать уведомления, сначала напишите боту.")
@@ -329,7 +323,6 @@ with st.sidebar:
     
     new_id = st.text_input("Package ID", placeholder="com.example.app").strip()
     
-    # Мультиселект локалей
     selected_names = st.multiselect("Выберите локали (можно несколько)", options=list(GP_LOCALES_RAW.values()), default=["English (United States)"])
     new_geos = [k for k, v in GP_LOCALES_RAW.items() if v in selected_names]
     
@@ -383,17 +376,15 @@ for (pkg_id, chat_id), keys in grouped_apps.items():
     owner_name = next((name for name, cid in users_dict.items() if str(cid) == str(chat_id)), "Неизвестно")
     first_info = db[keys[0]]
     main_title = first_info['current']['title']
+    
+    # В шапку карточки выводим иконку только первой локали для красоты
     main_icon = first_info['current'].get('icon')
-    main_header = first_info['current'].get('header_image') # Достаем FG для главной карточки
 
     with st.expander(f"📦 {main_title} ({pkg_id}) | 👤 {owner_name} | 🌍 Локалей: {len(keys)}"):
-        col_img, col_header, col_btn = st.columns([1, 2, 4])
+        col_img, col_space, col_btn = st.columns([1, 2, 4])
         
         with col_img:
-            if main_icon: st.image(main_icon, width=80)
-            
-        with col_header:
-            if main_header: st.image(main_header, width=160, caption="Feature Graphic") # Выводим FG
+            if main_icon and main_icon != 'nan': st.image(main_icon, width=80)
             
         with col_btn:
             if st.button(f"🔍 Проверить все локали ({len(keys)} шт.)", key=f"ch_grp_{pkg_id}_{chat_id}"):
@@ -414,16 +405,30 @@ for (pkg_id, chat_id), keys in grouped_apps.items():
 
         st.markdown("---")
         
-        # Создаем вкладки для локалей внутри карточки
+        # Вкладки локалей
         locale_labels = [GP_LOCALES_RAW.get(db[k]['geo'], db[k]['geo']) for k in keys]
         tabs = st.tabs(locale_labels)
         
         for i, k in enumerate(keys):
             info = db[k]
             with tabs[i]:
-                col_info, col_del = st.columns([5, 1])
+                # ИСПРАВЛЕНО: Выводим Иконку и FG СПЕЦИФИЧНЫЕ ДЛЯ ЭТОЙ ЛОКАЛИ прямо во вкладке
+                loc_icon = info['current'].get('icon')
+                loc_header = info['current'].get('header_image')
+                loc_scr_count = len(info['current'].get('screenshots', []))
+
+                col_loc_img, col_info, col_del = st.columns([1.5, 4, 1])
+                
+                with col_loc_img:
+                    if loc_icon and loc_icon != 'nan': 
+                        st.image(loc_icon, width=80, caption="Локальная Иконка")
+                    if loc_header and loc_header != 'nan': 
+                        st.image(loc_header, width=150, caption="Локальный Баннер (FG)")
+                    if loc_scr_count > 0:
+                        st.caption(f"📸 Скриншотов в базе: {loc_scr_count}")
+
                 with col_info:
-                    st.write(f"**Локаль:** `{info['geo']}`")
+                    st.write(f"**Локаль (Код):** `{info['geo']}`")
                     
                     if st.button("Проверить только эту локаль", key=f"ch_sng_{k}"):
                         with st.spinner("Проверка одной локали..."):
