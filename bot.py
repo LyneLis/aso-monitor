@@ -39,27 +39,45 @@ def analyze_changes_with_ai(old_t, new_t, old_s, new_s, old_d, new_d):
         f"--- СТАЛО ---\nTitle: {new_t}\nShort Description: {new_s}\nFull Description: {new_d}"
     )
 
-    priority_models = ['models/gemini-3-flash', 'models/gemini-2.0-flash', 'models/gemini-1.5-flash']
     available_models = []
     try:
         for m in genai.list_models():
             if 'generateContent' in m.supported_generation_methods:
-                available_models.append(m.name)
-    except: available_models = priority_models
+                # ОЧИЩАЕМ префикс 'models/', именно он вызывал 404
+                available_models.append(m.name.replace('models/', ''))
+    except Exception as e:
+        print(f"⚠️ Не удалось получить список моделей: {e}")
 
-    models_to_try = [m for m in priority_models if m in available_models]
-    if not models_to_try: models_to_try = available_models[:1] if available_models else priority_models
+    priority_list = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro']
 
+    models_to_try = [m for m in priority_list if m in available_models]
+    if not models_to_try:
+        models_to_try = available_models[:2] if available_models else priority_list
+
+    last_error = ""
     for model_name in models_to_try:
         try:
+            print(f"🤖 Пробую модель: {model_name}...")
             model = genai.GenerativeModel(model_name)
             response = model.generate_content(full_prompt)
-            if response and response.text: return response.text
-        except: continue
-    return "❌ Ошибка ИИ-анализа после нескольких попыток."
+            if response and response.text:
+                return response.text
+        except Exception as e:
+            last_error = str(e)
+            continue
+            
+    # Теперь мы увидим реальный текст ошибки в ТГ, если все попытки провалятся
+    return f"❌ Ошибка ИИ-анализа: {last_error}"
+
+def clean_val(val):
+    """Очистка значений от ошибок таблицы и пустоты"""
+    s_val = str(val).strip()
+    if s_val.lower() in ['#error!', 'nan', '', 'none', '#n/a']:
+        return None
+    return s_val
 
 def check_apps():
-    print(f"--- СТАРТ ПРОВЕРКИ v3.2 ({get_minsk_time()}) ---")
+    print(f"--- СТАРТ ПРОВЕРКИ v3.4 ({get_minsk_time()}) ---")
     try:
         gc = gspread.service_account_from_dict(service_account_info)
         sh = gc.open_by_url(SPREADSHEET_URL)
@@ -93,9 +111,13 @@ def check_apps():
         try:
             res = app(p_id, lang=l_code, country=c_code)
             
-            # Старые данные
-            old_t, old_s, old_d = str(row.get('title', '')), str(row.get('summary', '')), str(row.get('description', ''))
-            old_icon, old_header = str(row.get('icon', '')), str(row.get('header_image', ''))
+            # Старые данные: пропускаем через фильтр clean_val
+            old_t = clean_val(row.get('title'))
+            old_s = clean_val(row.get('summary'))
+            old_d = clean_val(row.get('description'))
+            old_icon = clean_val(row.get('icon'))
+            old_header = clean_val(row.get('header_image'))
+
             try: old_scr = json.loads(str(row.get('screenshots', '[]')))
             except: old_scr = []
             try: history = json.loads(str(row.get('history', '[]')))
@@ -107,13 +129,17 @@ def check_apps():
             new_t, new_s, new_d = str(res['title']).strip(), str(res['summary']).strip(), str(res['description']).strip()
             new_icon, new_header, new_scr = str(res['icon']).strip(), str(res.get('headerImage', '')).strip(), res['screenshots']
 
+            # Если старые данные вернули None (т.е. в таблице была ошибка), мы не считаем это обновлением
+            is_table_error = (old_t is None or old_s is None or old_d is None)
+
             changes = []
-            if new_t != old_t: changes.append("Название")
-            if new_s != old_s: changes.append("SD")
-            if new_d != old_d: changes.append("FD")
-            if old_icon and old_icon != 'nan' and new_icon != old_icon: changes.append("Иконка")
-            if old_header and old_header != 'nan' and new_header != old_header: changes.append("Feature Graphic")
-            if old_scr and new_scr != old_scr: changes.append("Скриншоты")
+            if not is_table_error:
+                if new_t != old_t: changes.append("Название")
+                if new_s != old_s: changes.append("SD")
+                if new_d != old_d: changes.append("FD")
+                if old_icon and new_icon != old_icon: changes.append("Иконка")
+                if old_header and new_header != old_header: changes.append("Feature Graphic")
+                if old_scr and new_scr != old_scr: changes.append("Скриншоты")
 
             if changes:
                 print(f"    ⚠️ Изменение в {p_id} ({full_geo})")
@@ -144,9 +170,15 @@ def check_apps():
                 history.append({"title": old_t, "summary": old_s, "description": old_d, "time": get_minsk_time()})
                 row['history'] = json.dumps(history[-5:], ensure_ascii=False)
                 
+            elif is_table_error:
+                print(f"    🛠 Восстановление данных из-за ошибки в таблице для {p_id}")
+                current_log.append({"time": get_minsk_time(), "status": "🟢 Авто: Исправление ошибки"})
+                row['title'], row['summary'], row['description'] = new_t, new_s, new_d
+                row['icon'], row['header_image'], row['screenshots'] = new_icon, new_header, json.dumps(new_scr, ensure_ascii=False)
+
             else:
                 current_log.append({"time": get_minsk_time(), "status": "🟢 Авто: Без изменений"})
-                if (not old_icon or old_icon == 'nan') and new_icon:
+                if not old_icon and new_icon:
                     row['icon'], row['header_image'], row['screenshots'] = new_icon, new_header, json.dumps(new_scr, ensure_ascii=False)
 
             row['check_log'] = json.dumps(current_log[-5:], ensure_ascii=False)
