@@ -12,7 +12,7 @@ service_account_info = json.loads(os.environ.get("GCP_SERVICE_ACCOUNT_JSON"))
 SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1jHKbRYt0hJg29RWLIXZ2fL3et_hgzvkhCSxVtTjKV9g/edit"
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# Настраиваем ИИ с использованием REST-транспорта (фикс для GitHub Actions)
+# Настраиваем ИИ с использованием REST-транспорта
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY, transport='rest')
 
@@ -85,7 +85,7 @@ def analyze_changes_with_ai(old_t, new_t, old_s, new_s, old_d, new_d):
             last_error = str(e)
             continue 
             
-    return f"❌ Ошибка ИИ-анализа: {last_error}. Проверьте доступность моделей в Google AI Studio."
+    return f"❌ Ошибка ИИ-анализа: {last_error}."
 
 def check_apps():
     print(f"--- СТАРТ ПРОВЕРКИ С АВТОЗАПИСЬЮ И ИИ-АНАЛИЗОМ ({get_minsk_time()}) ---")
@@ -108,7 +108,6 @@ def check_apps():
         p_id = str(row.get('package_id', '')).strip()
         if not p_id or p_id == 'nan': continue
         
-        # ЖЕСТКАЯ ПРОВЕРКА ВЛАДЕЛЬЦА: привязываем приложение строго к ID
         c_id = str(row.get('chat_id', '')).strip()
         has_owner = bool(c_id and c_id.lower() != 'nan')
 
@@ -131,65 +130,113 @@ def check_apps():
         try: current_log = json.loads(log_str)
         except: current_log = []
 
+        # Загрузка истории для детектора A/B тестов
+        hist_str = str(row.get('history', '[]')).strip()
+        if not hist_str or hist_str == 'nan': hist_str = '[]'
+        try: history = json.loads(hist_str)
+        except: history = []
+
         try:
             res = app(p_id, lang=l_code, country=c_code)
             
             old_t = str(row.get('title', '')).strip()
             old_s = str(row.get('summary', '')).strip()
             old_d = str(row.get('description', '')).strip()
+            old_icon = str(row.get('icon', '')).strip()
+            
+            try: old_scr = json.loads(str(row.get('screenshots', '[]')).strip())
+            except: old_scr = []
             
             new_t = str(res['title']).strip()
             new_s = str(res['summary']).strip()
             new_d = str(res['description']).strip()
+            new_icon = str(res.get('icon', '')).strip()
+            new_scr = res.get('screenshots', [])
 
             changes = []
+            # Проверка текстов
             if new_t != old_t: changes.append("Название")
             if new_s != old_s: changes.append("SD")
             if new_d != old_d: changes.append("FD")
+            
+            # Проверка визуала (только если он уже был в базе)
+            if old_icon and old_icon != 'nan' and new_icon != old_icon: changes.append("Иконка")
+            if old_scr and new_scr != old_scr: changes.append("Скриншоты")
 
             if changes:
-                print(f"    ⚠️ Изменение в {p_id}. Запуск ИИ...")
+                print(f"    ⚠️ Изменение в {p_id}. Запуск обработки...")
                 current_log.append({"time": get_minsk_time(), "status": f"🔴 Авто: Изменение ({', '.join(changes)})"})
                 
-                # ОТПРАВКА ТОЛЬКО ЕСЛИ ЕСТЬ ВЛАДЕЛЕЦ
                 if has_owner:
                     user_stats[c_id]['updated'] += 1
                     
-                    # 1. Telegram: Уведомление
-                    msg = f"🔔 АВТО-ИЗМЕНЕНИЕ! [{full_geo.upper()}]\n📦 {p_id}\n\nПоля: {', '.join(changes)}\nНазвание: {new_t}"
-                    requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": c_id, "text": msg})
-                    
-                    # 2. Telegram: Файл отчета
-                    report_content = (
-                        f"ОТЧЕТ ОБ ИЗМЕНЕНИЯХ\nДата: {get_minsk_time()}\nПриложение: {p_id}\nЛокаль: {full_geo}\n"
-                        f"{'='*30}\n\n--- СТАРОЕ НАЗВАНИЕ ---\n{old_t}\n\n--- НОВОЕ НАЗВАНИЕ ---\n{new_t}\n\n"
-                        f"{'-'*30}\n--- СТАРЫЙ SD ---\n{old_s}\n\n--- НОВЫЙ SD ---\n{new_s}\n\n"
-                        f"{'-'*30}\n--- СТАРЫЙ FD ---\n{old_d}\n\n--- НОВЫЙ FD ---\n{new_d}\n"
-                    )
-                    file_path = f"report_{p_id}.txt"
-                    with open(file_path, "w", encoding="utf-8") as f: f.write(report_content)
-                    with open(file_path, "rb") as f:
-                        requests.post(f"https://api.telegram.org/bot{TOKEN}/sendDocument", 
-                                     data={"chat_id": c_id, "caption": f"📄 Детальный отчет: {p_id}"}, files={"document": f})
-                    os.remove(file_path)
+                    # --- Детектор A/B тестов (Откатов) ---
+                    is_rollback = False
+                    for past in history:
+                        if new_t == past.get('title') and new_s == past.get('summary') and new_d == past.get('description'):
+                            is_rollback = True
+                            break
 
-                    # 3. Telegram: Анализ ИИ
-                    ai_analysis = analyze_changes_with_ai(old_t, new_t, old_s, new_s, old_d, new_d)
-                    ai_msg = f"🤖 *Анализ стратегии от ИИ:*\n\n{ai_analysis}"
-                    tg_response = requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
-                                  data={"chat_id": c_id, "text": ai_msg, "parse_mode": "Markdown"})
-                    if tg_response.status_code != 200:
-                        requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
-                                      data={"chat_id": c_id, "text": ai_msg})
+                    msg_prefix = "🔄 АВТО-ОТКАТ (A/B ТЕСТ)" if is_rollback else "🔔 АВТО-ИЗМЕНЕНИЕ!"
+                    alert_msg = f"{msg_prefix} [{full_geo.upper()}]\n📦 {p_id}\n\nПоля: {', '.join(changes)}\nНазвание: {new_t}"
+                    
+                    if is_rollback:
+                        alert_msg += "\n\n⚠️ Тексты вернулись к одной из прошлых версий."
+                    if "Иконка" in changes:
+                        alert_msg += f"\n\n🖼 Новая иконка: {new_icon}"
+
+                    # 1. Telegram: Уведомление
+                    requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": c_id, "text": alert_msg})
+                    
+                    text_changed = any(k in changes for k in ["Название", "SD", "FD"])
+                    
+                    if text_changed:
+                        # 2. Telegram: Файл отчета
+                        report_content = (
+                            f"ОТЧЕТ ОБ ИЗМЕНЕНИЯХ\nДата: {get_minsk_time()}\nПриложение: {p_id}\nЛокаль: {full_geo}\n"
+                            f"{'='*30}\n\n--- СТАРОЕ НАЗВАНИЕ ---\n{old_t}\n\n--- НОВОЕ НАЗВАНИЕ ---\n{new_t}\n\n"
+                            f"{'-'*30}\n--- СТАРЫЙ SD ---\n{old_s}\n\n--- НОВЫЙ SD ---\n{new_s}\n\n"
+                            f"{'-'*30}\n--- СТАРЫЙ FD ---\n{old_d}\n\n--- НОВЫЙ FD ---\n{new_d}\n"
+                        )
+                        file_path = f"report_{p_id}.txt"
+                        with open(file_path, "w", encoding="utf-8") as f: f.write(report_content)
+                        with open(file_path, "rb") as f:
+                            requests.post(f"https://api.telegram.org/bot{TOKEN}/sendDocument", 
+                                         data={"chat_id": c_id, "caption": f"📄 Детальный отчет: {p_id}"}, files={"document": f})
+                        os.remove(file_path)
+
+                        # 3. Telegram: Анализ ИИ
+                        ai_analysis = analyze_changes_with_ai(old_t, new_t, old_s, new_s, old_d, new_d)
+                        ai_msg = f"🤖 *Анализ стратегии от ИИ:*\n\n{ai_analysis}"
+                        tg_response = requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
+                                      data={"chat_id": c_id, "text": ai_msg, "parse_mode": "Markdown"})
+                        if tg_response.status_code != 200:
+                            requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
+                                          data={"chat_id": c_id, "text": ai_msg})
 
                 # 4. Обновление таблицы
                 if "title" in col_map: worksheet.update_cell(row_number, col_map["title"], new_t)
                 if "summary" in col_map: worksheet.update_cell(row_number, col_map["summary"], new_s)
                 if "description" in col_map: worksheet.update_cell(row_number, col_map["description"], new_d)
                 
+                # Добавляем историю
+                current_state = {"title": new_t, "summary": new_s, "description": new_d}
+                history.append(current_state)
+                if "history" in col_map: worksheet.update_cell(row_number, col_map["history"], json.dumps(history, ensure_ascii=False))
+                
+                # Обновляем графику
+                if "icon" in col_map: worksheet.update_cell(row_number, col_map["icon"], new_icon)
+                if "screenshots" in col_map: worksheet.update_cell(row_number, col_map["screenshots"], json.dumps(new_scr, ensure_ascii=False))
+
             else:
                 print(f"    ✅ {p_id}: Без изменений.")
                 current_log.append({"time": get_minsk_time(), "status": "🟢 Авто: Без изменений"})
+                
+                # Тихое обновление графики (инициализация старой базы)
+                has_no_old_icon = not old_icon or old_icon == 'nan'
+                if has_no_old_icon and new_icon:
+                    if "icon" in col_map: worksheet.update_cell(row_number, col_map["icon"], new_icon)
+                    if "screenshots" in col_map: worksheet.update_cell(row_number, col_map["screenshots"], json.dumps(new_scr, ensure_ascii=False))
 
             if "check_log" in col_map:
                 current_log = current_log[-5:]

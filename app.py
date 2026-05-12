@@ -144,7 +144,6 @@ def send_telegram_msg(text, chat_id, use_markdown=False):
             data["parse_mode"] = "Markdown"
         try: 
             res = requests.post(url, data=data)
-            # Если отправка с Markdown не удалась, отправляем как обычный текст
             if use_markdown and res.status_code != 200:
                 requests.post(url, data={"chat_id": chat_id, "text": text})
         except: pass
@@ -173,9 +172,16 @@ def load_data():
             if 'check_log' in df.columns and not pd.isna(row['check_log']):
                 try: c_log = json.loads(str(row['check_log']))
                 except: pass
+            
             data[u_key] = {
                 "package_id": p_id, "geo": geo, "chat_id": c_id,
-                "current": {"title": str(row['title']), "summary": str(row['summary']), "description": str(row['description'])},
+                "current": {
+                    "title": str(row['title']), 
+                    "summary": str(row['summary']), 
+                    "description": str(row['description']),
+                    "icon": str(row.get('icon', '')),
+                    "screenshots": json.loads(row['screenshots']) if 'screenshots' in df.columns and isinstance(row.get('screenshots'), str) else []
+                },
                 "history": json.loads(row['history']) if 'history' in df.columns and isinstance(row['history'], str) else [],
                 "check_log": c_log
             }
@@ -190,6 +196,8 @@ def save_data(data):
             rows.append({
                 "package_id": info['package_id'], "geo": info['geo'], "chat_id": info.get('chat_id', ''),
                 "title": info['current']['title'], "summary": info['current']['summary'], "description": info['current']['description'],
+                "icon": info['current'].get('icon', ''),
+                "screenshots": json.dumps(info['current'].get('screenshots', []), ensure_ascii=False),
                 "history": json.dumps(info['history'], ensure_ascii=False),
                 "check_log": json.dumps(info.get('check_log', []), ensure_ascii=False)
             })
@@ -213,51 +221,89 @@ if st.button("🔍 Проверить все приложения сейчас")
                 changed = []
                 
                 old = info['current']
+                new_icon = new_m.get('icon', '')
+                new_scr = new_m.get('screenshots', [])
+                
+                # Проверка текстов
                 if new_m['title'] != old['title']: changed.append("Title")
                 if new_m['summary'] != old['summary']: changed.append("SD")
                 if new_m['description'] != old['description']: changed.append("FD")
 
+                # Проверка визуала (только если он уже был в базе, чтобы избежать спама при первом запуске)
+                if old.get('icon') and new_icon != old['icon']: changed.append("Иконка")
+                if old.get('screenshots') and new_scr != old.get('screenshots'): changed.append("Скриншоты")
+
                 if changed:
                     updates_count += 1
                     c_id = info['chat_id']
-                    report_entry = (
-                        f"📦 [{info['geo'].upper()}] {info['package_id']}\n"
-                        f"ИЗМЕНЕНО: {', '.join(changed)}\n\n"
-                        f"--- OLD TITLE ---\n{old['title']}\n"
-                        f"--- NEW TITLE ---\n{new_m['title']}\n\n"
-                        f"--- OLD SD ---\n{old['summary']}\n"
-                        f"--- NEW SD ---\n{new_m['summary']}\n\n"
-                        f"--- OLD FD ---\n{old['description']}\n"
-                        f"--- NEW FD ---\n{new_m['description']}\n"
-                        f"{'='*30}\n\n"
-                    )
                     
-                    user_reports.setdefault(c_id, "--- ASO MANUAL REPORT (FROM SITE) ---\n\n")
-                    user_reports[c_id] += report_entry
+                    # --- Детектор A/B тестов (Откатов) ---
+                    is_rollback = False
+                    for past in info['history']:
+                        if new_m['title'] == past.get('title') and new_m['summary'] == past.get('summary') and new_m['description'] == past.get('description'):
+                            is_rollback = True
+                            break
+
+                    msg_prefix = "🔄 ОТКАТ (A/B ТЕСТ)" if is_rollback else "⚠️ ИЗМЕНЕНИЕ"
+                    alert_msg = f"{msg_prefix} [{info['geo'].upper()}]\n📦 {new_m['title']}\nИзменено: {', '.join(changed)}"
                     
-                    # 1. Уведомление об изменении
-                    send_telegram_msg(f"⚠️ ИЗМЕНЕНИЕ [{info['geo'].upper()}]\n{new_m['title']}\nИзменено: {', '.join(changed)}", c_id)
+                    if is_rollback:
+                        alert_msg += "\n\n⚠️ Тексты вернулись к одной из прошлых версий. Вероятно, A/B тест завершен."
+                    if "Иконка" in changed:
+                        alert_msg += f"\n\n🖼 Новая иконка: {new_icon}"
+
+                    # 1. Уведомление
+                    send_telegram_msg(alert_msg, c_id)
+
+                    text_changed = any(k in changed for k in ["Title", "SD", "FD"])
                     
-                    # 2. ИИ Анализ
-                    ai_analysis = analyze_changes_with_ai(old['title'], new_m['title'], old['summary'], new_m['summary'], old['description'], new_m['description'])
-                    ai_msg = f"🤖 *Анализ стратегии от ИИ (Сайт):*\n\n{ai_analysis}"
-                    send_telegram_msg(ai_msg, c_id, use_markdown=True)
+                    # 2. Файл с текстами (Только если менялись тексты)
+                    if text_changed:
+                        report_entry = (
+                            f"📦 [{info['geo'].upper()}] {info['package_id']}\n"
+                            f"ИЗМЕНЕНО: {', '.join(changed)}\n\n"
+                            f"--- OLD TITLE ---\n{old['title']}\n"
+                            f"--- NEW TITLE ---\n{new_m['title']}\n\n"
+                            f"--- OLD SD ---\n{old['summary']}\n"
+                            f"--- NEW SD ---\n{new_m['summary']}\n\n"
+                            f"--- OLD FD ---\n{old['description']}\n"
+                            f"--- NEW FD ---\n{new_m['description']}\n"
+                            f"{'='*30}\n\n"
+                        )
+                        user_reports.setdefault(c_id, "--- ASO MANUAL REPORT (FROM SITE) ---\n\n")
+                        user_reports[c_id] += report_entry
+                        
+                        # 3. ИИ Анализ
+                        ai_analysis = analyze_changes_with_ai(old['title'], new_m['title'], old['summary'], new_m['summary'], old['description'], new_m['description'])
+                        ai_msg = f"🤖 *Анализ стратегии от ИИ:*\n\n{ai_analysis}"
+                        send_telegram_msg(ai_msg, c_id, use_markdown=True)
                     
+                    # 4. Обновление
                     info['history'].append(info['current'])
-                    info['current'] = {"title": new_m['title'], "summary": new_m['summary'], "description": new_m['description']}
+                    info['current'] = {
+                        "title": new_m['title'], "summary": new_m['summary'], "description": new_m['description'],
+                        "icon": new_icon, "screenshots": new_scr
+                    }
                     log_entry["status"] = f"🔴 Ручная: Изменение ({', '.join(changed)})"
                 
+                else:
+                    # ТИХОЕ ОБНОВЛЕНИЕ: Если визуалов не было, просто сохраняем их без алертов
+                    if not old.get('icon') and new_icon:
+                        info['current']['icon'] = new_icon
+                        info['current']['screenshots'] = new_scr
+
                 info.setdefault('check_log', []).append(log_entry)
                 info['check_log'] = info['check_log'][-5:] # Оставляем 5 последних
-            except: 
+            except Exception as e: 
+                print(f"Ошибка проверки {key}: {e}")
                 pass
         
         if updates_count > 0:
             for c_id, rep_text in user_reports.items():
-                send_telegram_file(rep_text, "manual_aso_report.txt", f"📊 Ручная проверка: найдено {updates_count} изменений.", c_id)
-            st.success(f"Проверка окончена. Найдено изменений: {updates_count}. Файлы и ИИ-анализ отправлены пользователям!")
+                send_telegram_file(rep_text, "manual_aso_report.txt", f"📊 Ручная проверка: найдено {updates_count} текстовых изменений.", c_id)
+            st.success(f"Проверка окончена. Найдено изменений: {updates_count}. Отчеты отправлены!")
         else:
-            st.info("Изменений не обнаружено.")
+            st.info("Изменений не обнаружено. (Новые визуалы инициализированы, если их не было)")
             
         save_data(db)
         st.rerun()
@@ -295,7 +341,10 @@ with st.sidebar:
                         res = fetch_gp_data(new_id, new_geo)
                         db[u_key] = {
                             "package_id": new_id, "geo": new_geo, "chat_id": str(selected_chat_id),
-                            "current": {"title": res['title'], "summary": res['summary'], "description": res['description']},
+                            "current": {
+                                "title": res['title'], "summary": res['summary'], "description": res['description'],
+                                "icon": res.get('icon', ''), "screenshots": res.get('screenshots', [])
+                            },
                             "history": [], "check_log": [{"time": get_minsk_time(), "status": "🆕 Добавлено"}]
                         }
                         if save_data(db):
@@ -316,45 +365,69 @@ for key, info in db.items():
         owner_name = next((name for name, cid in users_dict.items() if str(cid) == str(info.get('chat_id', ''))), "Неизвестно")
         with st.expander(f"📦 [{info['geo']}] {info['current']['title']} | Пользователь: {owner_name}"):
             if st.button("Проверить", key=f"ch_{key}"):
-                with st.spinner("Проверка и генерация ИИ-отчета..."):
+                with st.spinner("Проверка со стором..."):
                     try:
                         new_m = fetch_gp_data(info['package_id'], info['geo'])
                         log_entry = {"time": get_minsk_time(), "status": "🟢 Ручная: Ок"}
                         changed = []
                         old = info['current']
                         
+                        new_icon = new_m.get('icon', '')
+                        new_scr = new_m.get('screenshots', [])
+                        
                         if new_m['title'] != old['title']: changed.append("Title")
                         if new_m['summary'] != old['summary']: changed.append("SD")
                         if new_m['description'] != old['description']: changed.append("FD")
                         
+                        if old.get('icon') and new_icon != old['icon']: changed.append("Иконка")
+                        if old.get('screenshots') and new_scr != old.get('screenshots'): changed.append("Скриншоты")
+                        
                         if changed:
-                            # 1. Уведомление
-                            send_telegram_msg(f"⚠️ ИЗМЕНЕНИЕ [{info['geo'].upper()}]\n{new_m['title']}\nИзменено: {', '.join(changed)}", info['chat_id'])
-                            
-                            # 2. Файл с полными текстами (ДОБАВЛЕНО)
-                            report_content = (
-                                f"ОТЧЕТ ОБ ИЗМЕНЕНИЯХ (Ручная проверка)\nДата: {get_minsk_time()}\nПриложение: {info['package_id']}\nЛокаль: {info['geo']}\n"
-                                f"{'='*30}\n\n--- СТАРОЕ НАЗВАНИЕ ---\n{old['title']}\n\n--- НОВОЕ НАЗВАНИЕ ---\n{new_m['title']}\n\n"
-                                f"{'-'*30}\n--- СТАРЫЙ SD ---\n{old['summary']}\n\n--- НОВЫЙ SD ---\n{new_m['summary']}\n\n"
-                                f"{'-'*30}\n--- СТАРЫЙ FD ---\n{old['description']}\n\n--- НОВЫЙ FD ---\n{new_m['description']}\n"
-                            )
-                            send_telegram_file(report_content, f"report_{info['package_id']}.txt", f"📄 Детальный отчет: {info['package_id']}", info['chat_id'])
+                            is_rollback = False
+                            for past in info['history']:
+                                if new_m['title'] == past.get('title') and new_m['summary'] == past.get('summary') and new_m['description'] == past.get('description'):
+                                    is_rollback = True
+                                    break
 
-                            # 3. ИИ Анализ
-                            ai_analysis = analyze_changes_with_ai(old['title'], new_m['title'], old['summary'], new_m['summary'], old['description'], new_m['description'])
-                            ai_msg = f"🤖 *Анализ стратегии от ИИ (Сайт):*\n\n{ai_analysis}"
-                            send_telegram_msg(ai_msg, info['chat_id'], use_markdown=True)
+                            msg_prefix = "🔄 ОТКАТ (A/B ТЕСТ)" if is_rollback else "⚠️ ИЗМЕНЕНИЕ"
+                            alert_msg = f"{msg_prefix} [{info['geo'].upper()}]\n📦 {new_m['title']}\nИзменено: {', '.join(changed)}"
                             
-                            # 4. Обновление
+                            if is_rollback:
+                                alert_msg += "\n\n⚠️ Тексты вернулись к одной из прошлых версий. Вероятно, A/B тест завершен."
+                            if "Иконка" in changed:
+                                alert_msg += f"\n\n🖼 Новая иконка: {new_icon}"
+
+                            send_telegram_msg(alert_msg, info['chat_id'])
+                            
+                            text_changed = any(k in changed for k in ["Title", "SD", "FD"])
+                            if text_changed:
+                                report_content = (
+                                    f"ОТЧЕТ ОБ ИЗМЕНЕНИЯХ (Ручная проверка)\nДата: {get_minsk_time()}\nПриложение: {info['package_id']}\nЛокаль: {info['geo']}\n"
+                                    f"{'='*30}\n\n--- СТАРОЕ НАЗВАНИЕ ---\n{old['title']}\n\n--- НОВОЕ НАЗВАНИЕ ---\n{new_m['title']}\n\n"
+                                    f"{'-'*30}\n--- СТАРЫЙ SD ---\n{old['summary']}\n\n--- НОВЫЙ SD ---\n{new_m['summary']}\n\n"
+                                    f"{'-'*30}\n--- СТАРЫЙ FD ---\n{old['description']}\n\n--- НОВЫЙ FD ---\n{new_m['description']}\n"
+                                )
+                                send_telegram_file(report_content, f"report_{info['package_id']}.txt", f"📄 Детальный отчет: {info['package_id']}", info['chat_id'])
+
+                                ai_analysis = analyze_changes_with_ai(old['title'], new_m['title'], old['summary'], new_m['summary'], old['description'], new_m['description'])
+                                ai_msg = f"🤖 *Анализ стратегии от ИИ:*\n\n{ai_analysis}"
+                                send_telegram_msg(ai_msg, info['chat_id'], use_markdown=True)
+                            
                             info['history'].append(info['current'])
-                            info['current'] = {"title": new_m['title'], "summary": new_m['summary'], "description": new_m['description']}
+                            info['current'] = {
+                                "title": new_m['title'], "summary": new_m['summary'], "description": new_m['description'],
+                                "icon": new_icon, "screenshots": new_scr
+                            }
                             log_entry["status"] = f"🔴 Ручная: Изменение ({', '.join(changed)})"
                             st.success(f"Обновлено: {', '.join(changed)}. Отчеты отправлены.")
                         else:
                             st.info("Без изменений.")
+                            if not old.get('icon') and new_icon:
+                                info['current']['icon'] = new_icon
+                                info['current']['screenshots'] = new_scr
                         
                         info.setdefault('check_log', []).append(log_entry)
-                        info['check_log'] = info['check_log'][-5:] # Оставляем 5 последних
+                        info['check_log'] = info['check_log'][-5:]
                         save_data(db)
                         st.rerun()
                     except Exception as e:
@@ -362,6 +435,8 @@ for key, info in db.items():
 
             st.write(f"**ID:** {info['package_id']}")
             st.write(f"**Локаль:** {GP_LOCALES.get(info['geo'], info['geo'])}")
+            if info['current'].get('icon'):
+                st.image(info['current']['icon'], width=64)
             
             if info['history']:
                 st.warning("⚠️ Есть старые версии!")
