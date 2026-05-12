@@ -43,7 +43,6 @@ def analyze_changes_with_ai(old_t, new_t, old_s, new_s, old_d, new_d):
     try:
         for m in genai.list_models():
             if 'generateContent' in m.supported_generation_methods:
-                # ОЧИЩАЕМ префикс 'models/', именно он вызывал 404
                 available_models.append(m.name.replace('models/', ''))
     except Exception as e:
         print(f"⚠️ Не удалось получить список моделей: {e}")
@@ -66,7 +65,6 @@ def analyze_changes_with_ai(old_t, new_t, old_s, new_s, old_d, new_d):
             last_error = str(e)
             continue
             
-    # Теперь мы увидим реальный текст ошибки в ТГ, если все попытки провалятся
     return f"❌ Ошибка ИИ-анализа: {last_error}"
 
 def clean_val(val):
@@ -77,7 +75,7 @@ def clean_val(val):
     return s_val
 
 def check_apps():
-    print(f"--- СТАРТ ПРОВЕРКИ v3.4 ({get_minsk_time()}) ---")
+    print(f"--- СТАРТ ПРОВЕРКИ v3.5 ({get_minsk_time()}) ---")
     try:
         gc = gspread.service_account_from_dict(service_account_info)
         sh = gc.open_by_url(SPREADSHEET_URL)
@@ -111,7 +109,6 @@ def check_apps():
         try:
             res = app(p_id, lang=l_code, country=c_code)
             
-            # Старые данные: пропускаем через фильтр clean_val
             old_t = clean_val(row.get('title'))
             old_s = clean_val(row.get('summary'))
             old_d = clean_val(row.get('description'))
@@ -125,11 +122,9 @@ def check_apps():
             try: current_log = json.loads(str(row.get('check_log', '[]')))
             except: current_log = []
 
-            # Новые данные
             new_t, new_s, new_d = str(res['title']).strip(), str(res['summary']).strip(), str(res['description']).strip()
             new_icon, new_header, new_scr = str(res['icon']).strip(), str(res.get('headerImage', '')).strip(), res['screenshots']
 
-            # Если старые данные вернули None (т.е. в таблице была ошибка), мы не считаем это обновлением
             is_table_error = (old_t is None or old_s is None or old_d is None)
 
             changes = []
@@ -159,11 +154,18 @@ def check_apps():
                                      data={"chat_id": c_id, "caption": f"📄 Отчет: {p_id}"}, 
                                      files={"document": (f"report_{p_id}.txt", report.encode('utf-8'))})
 
-                        ai_analysis = analyze_changes_with_ai(old_t, new_t, old_s, new_s, old_d, new_d)
+                        # Получаем ответ от ИИ
+                        raw_ai_analysis = analyze_changes_with_ai(old_t, new_t, old_s, new_s, old_d, new_d)
+                        
+                        # ВАЖНО: Вырезаем все спецсимволы Markdown, чтобы Телеграм не ругался
+                        clean_ai_analysis = raw_ai_analysis.replace('*', '').replace('_', '').replace('#', '').replace('`', '')
+                        
+                        ai_msg = f"🤖 Анализ ИИ:\n\n{clean_ai_analysis}"
+                        
+                        # Отправляем как обычный текст (без parse_mode)
                         requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
-                                      data={"chat_id": c_id, "text": f"🤖 *Анализ ИИ:*\n\n{ai_analysis}", "parse_mode": "Markdown"})
+                                      data={"chat_id": c_id, "text": ai_msg})
 
-                # Обновляем локальную строку (подготовка списка)
                 row['title'], row['summary'], row['description'] = new_t, new_s, new_d
                 row['icon'], row['header_image'] = new_icon, new_header
                 row['screenshots'] = json.dumps(new_scr, ensure_ascii=False)
@@ -183,16 +185,14 @@ def check_apps():
 
             row['check_log'] = json.dumps(current_log[-5:], ensure_ascii=False)
 
-            # --- ПАКЕТНОЕ ОБНОВЛЕНИЕ СТРОКИ ---
             new_row_list = [row.get(h, "") for h in headers]
             range_name = f"A{i}:{gspread.utils.rowcol_to_a1(i, len(headers))}"
             worksheet.update(range_name, [new_row_list])
-            time.sleep(0.6) # Пауза против ошибки 429
+            time.sleep(0.6)
 
         except Exception as e:
             print(f"    ❌ Ошибка {p_id}: {e}")
 
-    # Финальное резюме
     for c_id, stats in user_stats.items():
         if stats['updated'] > 0:
             report = (f"⚙️ Системный авто-отчет\n⏰ {get_minsk_time()}\n"
