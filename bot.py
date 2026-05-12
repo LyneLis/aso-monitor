@@ -177,11 +177,18 @@ def check_apps():
                                  data={"chat_id": c_id, "caption": f"📄 Детальный отчет: {p_id}"}, files={"document": f})
                 os.remove(file_path)
 
-                # 3. Telegram: Анализ ИИ
+                # 3. Telegram: Анализ ИИ (С ЗАЩИТОЙ ОТ ПАДЕНИЙ MARKDOWN)
                 ai_analysis = analyze_changes_with_ai(old_t, new_t, old_s, new_s, old_d, new_d)
-                ai_msg = f"🤖 **Анализ стратегии от ИИ:**\n\n{ai_analysis}"
-                requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
+                ai_msg = f"🤖 *Анализ стратегии от ИИ:*\n\n{ai_analysis}"
+                
+                # Сначала пробуем отправить с красивым форматированием
+                tg_response = requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
                               data={"chat_id": c_id, "text": ai_msg, "parse_mode": "Markdown"})
+                
+                # Если Telegram отклонил сообщение (статус не 200 OK), отправляем как обычный текст
+                if tg_response.status_code != 200:
+                    requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
+                                  data={"chat_id": c_id, "text": ai_msg})
 
                 # 4. Обновление таблицы
                 if "title" in col_map: worksheet.update_cell(row_number, col_map["title"], new_t)
