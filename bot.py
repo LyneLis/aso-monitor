@@ -70,10 +70,23 @@ def analyze_changes_with_ai(old_t, new_t, old_s, new_s, old_d, new_d):
 def clean_val(val):
     """Очистка значений от ошибок таблицы и пустоты"""
     s_val = str(val).strip()
-    # ИСПРАВЛЕНО: Теперь ищем подстроку '#error', чтобы ловить '#ERROR! (Formula parse error.)'
     if s_val.lower() in ['nan', '', 'none', '#n/a'] or '#error' in s_val.lower():
         return None
     return s_val
+
+# НОВАЯ ФУНКЦИЯ ДЛЯ ОТПРАВКИ ФОТО-АЛЬБОМОВ (КОЛЛАЖЕЙ) В ТГ
+def send_visual_diff(chat_id, token, old_url, new_url, name, p_id, geo):
+    if not old_url or not new_url or old_url.lower() == 'nan' or new_url.lower() == 'nan': 
+        return
+    url = f"https://api.telegram.org/bot{token}/sendMediaGroup"
+    media = [
+        {"type": "photo", "media": old_url, "parse_mode": "HTML", "caption": f"🔴 <b>БЫЛО</b> | {name}\n📦 {p_id} [{geo}]"},
+        {"type": "photo", "media": new_url, "parse_mode": "HTML", "caption": f"🟢 <b>СТАЛО</b> | {name}\n📦 {p_id} [{geo}]"}
+    ]
+    try:
+        requests.post(url, json={"chat_id": chat_id, "media": media})
+    except Exception as e:
+        print(f"⚠️ Ошибка отправки медиа-группы: {e}")
 
 def check_apps():
     print(f"--- СТАРТ ПРОВЕРКИ v3.6 ({get_minsk_time()}) ---")
@@ -147,7 +160,16 @@ def check_apps():
                     msg_prefix = "🔄 АВТО-ОТКАТ" if is_rollback else "🔔 АВТО-ИЗМЕНЕНИЕ!"
                     alert_msg = f"{msg_prefix} [{full_geo.upper()}]\n📦 {p_id}\n\nПоля: {', '.join(changes)}"
                     
+                    # Отправляем главное текстовое уведомление
                     requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": c_id, "text": alert_msg})
+                    
+                    # Отправляем "БЫЛО/СТАЛО" для Иконки
+                    if "Иконка" in changes:
+                        send_visual_diff(c_id, TOKEN, old_icon, new_icon, "Иконка", p_id, full_geo.upper())
+
+                    # Отправляем "БЫЛО/СТАЛО" для FG
+                    if "Feature Graphic" in changes:
+                        send_visual_diff(c_id, TOKEN, old_header, new_header, "Feature Graphic", p_id, full_geo.upper())
                     
                     if any(k in ["Название", "SD", "FD"] for k in changes):
                         report = f"ОТЧЕТ: {p_id}\n\n--- БЫЛО ---\n{old_t}\n{old_s}\n\n--- СТАЛО ---\n{new_t}\n{new_s}"
@@ -155,15 +177,10 @@ def check_apps():
                                      data={"chat_id": c_id, "caption": f"📄 Отчет: {p_id}"}, 
                                      files={"document": (f"report_{p_id}.txt", report.encode('utf-8'))})
 
-                        # Получаем ответ от ИИ
                         raw_ai_analysis = analyze_changes_with_ai(old_t, new_t, old_s, new_s, old_d, new_d)
-                        
-                        # Вырезаем спецсимволы Markdown
                         clean_ai_analysis = raw_ai_analysis.replace('*', '').replace('_', '').replace('#', '').replace('`', '')
-                        
                         ai_msg = f"🤖 Анализ ИИ:\n\n{clean_ai_analysis}"
                         
-                        # Отправляем обычный текст
                         requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
                                       data={"chat_id": c_id, "text": ai_msg})
 
