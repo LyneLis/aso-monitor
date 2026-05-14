@@ -6,6 +6,7 @@ import requests
 import google.generativeai as genai
 from datetime import datetime, timedelta
 import time
+import re
 
 # Настройки окружения
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
@@ -105,19 +106,37 @@ def fetch_app_data(pkg_id, locale):
             raise Exception(f"Приложение {pkg_id} не найдено в App Store ({c_code})")
         
         data = res['results'][0]
+        
+        # --- ХАК ДЛЯ САБТАЙТЛА iOS ---
+        subtitle = data.get('subtitle', '')
+        if not subtitle:
+            try:
+                app_url = data.get('trackViewUrl', f"https://apps.apple.com/{c_code.lower()}/app/id{pkg_id}")
+                html = requests.get(app_url, timeout=5).text
+                match = re.search(r'<h2 class="app-header__subtitle"[^>]*>(.*?)</h2>', html, re.DOTALL)
+                if match:
+                    subtitle = match.group(1).strip()
+            except:
+                pass
+
+        # --- ХАК ДЛЯ СКРИНШОТОВ (Phone + Pad) ---
+        screens = data.get('screenshotUrls', [])
+        if not screens:
+            screens = data.get('ipadScreenshotUrls', [])
+
         return {
             'title': data.get('trackName', ''),
-            'summary': data.get('subtitle', ''), 
+            'summary': subtitle, 
             'description': data.get('description', ''),
             'icon': data.get('artworkUrl512', ''), 
             'headerImage': '',
-            'screenshots': data.get('screenshotUrls', [])
+            'screenshots': screens
         }
     else:
         return gp_app(pkg_id, lang=l_code, country=c_code)
 
 def check_apps():
-    print(f"--- СТАРТ ПРОВЕРКИ v3.10 ({get_minsk_time()}) ---")
+    print(f"--- СТАРТ ПРОВЕРКИ v3.11 ({get_minsk_time()}) ---")
     try:
         gc = gspread.service_account_from_dict(service_account_info)
         sh = gc.open_by_url(SPREADSHEET_URL)
@@ -170,7 +189,6 @@ def check_apps():
             changes = []
             if not is_table_error:
                 if new_t != old_t: changes.append("Название")
-                # УМНЫЕ ТЕРМИНЫ ДЛЯ УВЕДОМЛЕНИЙ
                 if new_s != old_s: changes.append("Subtitle" if is_ios else "SD")
                 if new_d != old_d: changes.append("Описание" if is_ios else "FD")
                 
@@ -207,11 +225,7 @@ def check_apps():
                             try: requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMediaGroup", json={"chat_id": c_id, "media": media})
                             except: pass
                     
-                    # ПРОВЕРЯЕМ УМНЫЕ ТЕРМИНЫ
                     if any(k in ["Название", "SD", "Subtitle", "FD", "Описание"] for k in changes):
-                        sd_label = "SUBTITLE" if is_ios else "SD"
-                        fd_label = "ОПИСАНИЕ" if is_ios else "FD"
-                        
                         report = (
                             f"ОТЧЕТ: {p_id}\n\n"
                             f"--- БЫЛО ---\n{old_t}\n{old_s}\n\n"
@@ -259,7 +273,4 @@ def check_apps():
         if stats['updated'] > 0:
             report = (f"⚙️ Системный авто-отчет\n⏰ {get_minsk_time()}\n"
                       f"📦 Проверено: {stats['checked']}\n⚠️ Обновлено: {stats['updated']}")
-            requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": c_id, "text": report})
-
-if __name__ == "__main__":
-    check_apps()
+            requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage

@@ -6,6 +6,7 @@ import google.generativeai as genai
 from google_play_scraper import app as gp_app
 from datetime import datetime, timedelta
 from streamlit_gsheets import GSheetsConnection
+import re
 
 st.set_page_config(page_title="ASO Monitor PRO", layout="wide")
 
@@ -118,19 +119,38 @@ def fetch_app_data(pkg_id, locale):
     if l_code == "iw": l_code = "iw"
 
     if str(pkg_id).isdigit():
-        url = f"https://itunes.apple.com/lookup?id={pkg_id}&country={c_code}"
+        apple_lang = locale.replace('-', '_')
+        url = f"https://itunes.apple.com/lookup?id={pkg_id}&country={c_code}&lang={apple_lang}"
         res = requests.get(url).json()
         if res['resultCount'] == 0:
             raise Exception(f"Приложение {pkg_id} не найдено в App Store ({c_code})")
         
         data = res['results'][0]
+        
+        # --- ХАК ДЛЯ САБТАЙТЛА iOS ---
+        subtitle = data.get('subtitle', '')
+        if not subtitle:
+            try:
+                app_url = data.get('trackViewUrl', f"https://apps.apple.com/{c_code.lower()}/app/id{pkg_id}")
+                html = requests.get(app_url, timeout=5).text
+                match = re.search(r'<h2 class="app-header__subtitle"[^>]*>(.*?)</h2>', html, re.DOTALL)
+                if match:
+                    subtitle = match.group(1).strip()
+            except:
+                pass
+
+        # --- ХАК ДЛЯ СКРИНШОТОВ (Phone + Pad) ---
+        screens = data.get('screenshotUrls', [])
+        if not screens:
+            screens = data.get('ipadScreenshotUrls', [])
+
         return {
             'title': data.get('trackName', ''),
-            'summary': data.get('subtitle', ''), 
+            'summary': subtitle, 
             'description': data.get('description', ''),
             'icon': data.get('artworkUrl512', ''), 
             'headerImage': '', 
-            'screenshots': data.get('screenshotUrls', [])
+            'screenshots': screens
         }
     else:
         return gp_app(pkg_id, lang=l_code, country=c_code)
@@ -254,7 +274,7 @@ def run_check_for_item(key, info, user_reports_dict, single_mode=False):
             msg_prefix = "🔄 ОТКАТ (A/B ТЕСТ)" if is_rollback else "⚠️ ИЗМЕНЕНИЕ"
             alert_msg = f"{msg_prefix} {os_icon} [{info['geo'].upper()}]\n📦 {new_m['title']}\nИзменено: {', '.join(changed)}"
 
-            if is_rollback: alert_msg += "\n\n⚠️ Тексты вернулись к одной из прошлых версий. Вероятно, A/B тест завершен."
+            if is_rollback: alert_msg += "\n\n⚠️ Тексты вернулись к одной из прошлых версий."
             
             send_telegram_msg(alert_msg, c_id)
 
@@ -275,7 +295,7 @@ def run_check_for_item(key, info, user_reports_dict, single_mode=False):
 
                 raw_ai_analysis = analyze_changes_with_ai(old_t, new_m['title'], old_s, new_m['summary'], old_d, new_m['description'])
                 clean_ai_analysis = raw_ai_analysis.replace('*', '').replace('_', '').replace('#', '').replace('`', '')
-                ai_msg = f"🤖 Анализ ИИ (Сайт):\n\n{clean_ai_analysis}"
+                ai_msg = f"🤖 Анализ ИИ:\n\n{clean_ai_analysis}"
                 send_telegram_msg(ai_msg, c_id)
 
             info['history'].append(info['current'])
@@ -309,13 +329,11 @@ def run_check_for_item(key, info, user_reports_dict, single_mode=False):
 
     return updates, changed
 
-
 # --- ИНТЕРФЕЙС ---
 st.title("🚀 ASO Monitor PRO")
 st.caption("Поддерживает Google Play (ID: com.app.name) и App Store (ID: 123456789)")
 db = load_data()
 
-# 🔍 ГЛАВНАЯ КНОПКА
 if st.button("🔍 Проверить вообще всё", type="primary"):
     with st.spinner("Тотальная проверка стора и анализ ИИ..."):
         updates_count = 0
@@ -335,7 +353,6 @@ if st.button("🔍 Проверить вообще всё", type="primary"):
         save_data(db)
         st.rerun()
 
-# ➕ БОКОВАЯ ПАНЕЛЬ
 with st.sidebar:
     st.header("➕ Добавить приложение")
     st.info("Чтобы получать уведомления, сначала напишите боту.")
@@ -385,7 +402,6 @@ with st.sidebar:
         else:
             st.warning("Заполните ID, выберите локали и пользователя!")
 
-# --- РАЗДЕЛЕНИЕ НА ПАПКИ (ВКЛАДКИ) ---
 android_apps = {}
 ios_apps = {}
 
@@ -400,7 +416,6 @@ for key, info in db.items():
 
 tab_android, tab_ios = st.tabs(["🤖 Android (Google Play)", "🍎 iOS (App Store)"])
 
-# Универсальная функция отрисовки карточек внутри вкладки
 def render_app_groups(app_groups, os_icon):
     if not app_groups:
         st.info("В этой категории пока нет отслеживаемых приложений.")
@@ -485,7 +500,6 @@ def render_app_groups(app_groups, os_icon):
                             save_data(db)
                             st.rerun()
 
-# Отрисовываем вкладки
 with tab_android:
     render_app_groups(android_apps, "🤖")
 
