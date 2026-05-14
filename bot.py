@@ -74,7 +74,6 @@ def clean_val(val):
         return None
     return s_val
 
-# НОВАЯ ФУНКЦИЯ ДЛЯ ОТПРАВКИ ФОТО-АЛЬБОМОВ (КОЛЛАЖЕЙ) В ТГ
 def send_visual_diff(chat_id, token, old_url, new_url, name, p_id, geo):
     if not old_url or not new_url or old_url.lower() == 'nan' or new_url.lower() == 'nan': 
         return
@@ -89,7 +88,7 @@ def send_visual_diff(chat_id, token, old_url, new_url, name, p_id, geo):
         print(f"⚠️ Ошибка отправки медиа-группы: {e}")
 
 def check_apps():
-    print(f"--- СТАРТ ПРОВЕРКИ v3.6 ({get_minsk_time()}) ---")
+    print(f"--- СТАРТ ПРОВЕРКИ v3.8 ({get_minsk_time()}) ---")
     try:
         gc = gspread.service_account_from_dict(service_account_info)
         sh = gc.open_by_url(SPREADSHEET_URL)
@@ -160,16 +159,26 @@ def check_apps():
                     msg_prefix = "🔄 АВТО-ОТКАТ" if is_rollback else "🔔 АВТО-ИЗМЕНЕНИЕ!"
                     alert_msg = f"{msg_prefix} [{full_geo.upper()}]\n📦 {p_id}\n\nПоля: {', '.join(changes)}"
                     
-                    # Отправляем главное текстовое уведомление
                     requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": c_id, "text": alert_msg})
                     
-                    # Отправляем "БЫЛО/СТАЛО" для Иконки
                     if "Иконка" in changes:
                         send_visual_diff(c_id, TOKEN, old_icon, new_icon, "Иконка", p_id, full_geo.upper())
 
-                    # Отправляем "БЫЛО/СТАЛО" для FG
                     if "Feature Graphic" in changes:
                         send_visual_diff(c_id, TOKEN, old_header, new_header, "Feature Graphic", p_id, full_geo.upper())
+                    
+                    # ДОБАВЛЕНО: Отправка новых скриншотов альбомом
+                    if "Скриншоты" in changes and new_scr:
+                        media = []
+                        # Берем до 10 первых скриншотов (лимит Telegram для одного альбома)
+                        for idx, scr_url in enumerate(new_scr[:10]):
+                            caption = f"📱 <b>ОБНОВЛЕННЫЕ СКРИНШОТЫ</b>\n📦 {p_id} [{full_geo.upper()}]" if idx == 0 else ""
+                            media.append({"type": "photo", "media": scr_url, "parse_mode": "HTML", "caption": caption})
+                        if media:
+                            try:
+                                requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMediaGroup", json={"chat_id": c_id, "media": media})
+                            except Exception as e:
+                                print(f"⚠️ Ошибка отправки скриншотов: {e}")
                     
                     if any(k in ["Название", "SD", "FD"] for k in changes):
                         report = f"ОТЧЕТ: {p_id}\n\n--- БЫЛО ---\n{old_t}\n{old_s}\n\n--- СТАЛО ---\n{new_t}\n{new_s}"
