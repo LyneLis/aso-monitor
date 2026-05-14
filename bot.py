@@ -70,12 +70,13 @@ def analyze_changes_with_ai(old_t, new_t, old_s, new_s, old_d, new_d):
 def clean_val(val):
     """Очистка значений от ошибок таблицы и пустоты"""
     s_val = str(val).strip()
-    if s_val.lower() in ['#error!', 'nan', '', 'none', '#n/a']:
+    # ИСПРАВЛЕНО: Теперь ищем подстроку '#error', чтобы ловить '#ERROR! (Formula parse error.)'
+    if s_val.lower() in ['nan', '', 'none', '#n/a'] or '#error' in s_val.lower():
         return None
     return s_val
 
 def check_apps():
-    print(f"--- СТАРТ ПРОВЕРКИ v3.5 ({get_minsk_time()}) ---")
+    print(f"--- СТАРТ ПРОВЕРКИ v3.6 ({get_minsk_time()}) ---")
     try:
         gc = gspread.service_account_from_dict(service_account_info)
         sh = gc.open_by_url(SPREADSHEET_URL)
@@ -157,12 +158,12 @@ def check_apps():
                         # Получаем ответ от ИИ
                         raw_ai_analysis = analyze_changes_with_ai(old_t, new_t, old_s, new_s, old_d, new_d)
                         
-                        # ВАЖНО: Вырезаем все спецсимволы Markdown, чтобы Телеграм не ругался
+                        # Вырезаем спецсимволы Markdown
                         clean_ai_analysis = raw_ai_analysis.replace('*', '').replace('_', '').replace('#', '').replace('`', '')
                         
                         ai_msg = f"🤖 Анализ ИИ:\n\n{clean_ai_analysis}"
                         
-                        # Отправляем как обычный текст (без parse_mode)
+                        # Отправляем обычный текст
                         requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
                                       data={"chat_id": c_id, "text": ai_msg})
 
