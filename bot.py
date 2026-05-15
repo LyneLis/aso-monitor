@@ -99,36 +99,43 @@ def fetch_app_data(pkg_id, locale):
     if l_code == "iw": l_code = "iw"
 
     if str(pkg_id).isdigit():
-        apple_lang = locale.replace('-', '_')
+        apple_lang = locale.replace('-', '_').lower()
         url = f"https://itunes.apple.com/lookup?id={pkg_id}&country={c_code}&lang={apple_lang}"
+        
         res = requests.get(url).json()
+        
         if res['resultCount'] == 0:
-            raise Exception(f"Приложение {pkg_id} не найдено в App Store ({c_code})")
+            url_fallback = f"https://itunes.apple.com/lookup?id={pkg_id}&country={c_code}"
+            res = requests.get(url_fallback).json()
+            if res['resultCount'] == 0:
+                raise Exception(f"Приложение {pkg_id} не найдено в App Store ({c_code})")
         
         data = res['results'][0]
         
-        # --- ХАК ДЛЯ САБТАЙТЛА iOS ---
         subtitle = data.get('subtitle', '')
         if not subtitle:
             try:
                 app_url = data.get('trackViewUrl', f"https://apps.apple.com/{c_code.lower()}/app/id{pkg_id}")
-                html = requests.get(app_url, timeout=5).text
-                match = re.search(r'<h2 class="app-header__subtitle"[^>]*>(.*?)</h2>', html, re.DOTALL)
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+                    "Accept-Language": f"{locale},en-US;q=0.9,en;q=0.8"
+                }
+                html = requests.get(app_url, headers=headers, timeout=5).text
+                match = re.search(r'app-header__subtitle[^>]*>([^<]+)<', html)
                 if match:
                     subtitle = match.group(1).strip()
-            except:
-                pass
+            except Exception as e:
+                print(f"⚠️ Не удалось стянуть Subtitle для {pkg_id}: {e}")
 
-        # --- ХАК ДЛЯ СКРИНШОТОВ (Phone + Pad) ---
+        # СТРОГО IPHONE СКРИНШОТЫ
         screens = data.get('screenshotUrls', [])
-        if not screens:
-            screens = data.get('ipadScreenshotUrls', [])
+        icon_url = data.get('artworkUrl512', data.get('artworkUrl100', ''))
 
         return {
             'title': data.get('trackName', ''),
             'summary': subtitle, 
             'description': data.get('description', ''),
-            'icon': data.get('artworkUrl512', ''), 
+            'icon': icon_url, 
             'headerImage': '',
             'screenshots': screens
         }
@@ -136,7 +143,7 @@ def fetch_app_data(pkg_id, locale):
         return gp_app(pkg_id, lang=l_code, country=c_code)
 
 def check_apps():
-    print(f"--- СТАРТ ПРОВЕРКИ v3.11 ({get_minsk_time()}) ---")
+    print(f"--- СТАРТ ПРОВЕРКИ v3.12 ({get_minsk_time()}) ---")
     try:
         gc = gspread.service_account_from_dict(service_account_info)
         sh = gc.open_by_url(SPREADSHEET_URL)

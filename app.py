@@ -119,37 +119,44 @@ def fetch_app_data(pkg_id, locale):
     if l_code == "iw": l_code = "iw"
 
     if str(pkg_id).isdigit():
-        apple_lang = locale.replace('-', '_')
+        apple_lang = locale.replace('-', '_').lower()
         url = f"https://itunes.apple.com/lookup?id={pkg_id}&country={c_code}&lang={apple_lang}"
+        
         res = requests.get(url).json()
+        
         if res['resultCount'] == 0:
-            raise Exception(f"Приложение {pkg_id} не найдено в App Store ({c_code})")
+            url_fallback = f"https://itunes.apple.com/lookup?id={pkg_id}&country={c_code}"
+            res = requests.get(url_fallback).json()
+            if res['resultCount'] == 0:
+                raise Exception(f"Приложение {pkg_id} не найдено в App Store ({c_code})")
         
         data = res['results'][0]
         
-        # --- ХАК ДЛЯ САБТАЙТЛА iOS ---
         subtitle = data.get('subtitle', '')
         if not subtitle:
             try:
                 app_url = data.get('trackViewUrl', f"https://apps.apple.com/{c_code.lower()}/app/id{pkg_id}")
-                html = requests.get(app_url, timeout=5).text
-                match = re.search(r'<h2 class="app-header__subtitle"[^>]*>(.*?)</h2>', html, re.DOTALL)
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+                    "Accept-Language": f"{locale},en-US;q=0.9,en;q=0.8"
+                }
+                html = requests.get(app_url, headers=headers, timeout=5).text
+                match = re.search(r'app-header__subtitle[^>]*>([^<]+)<', html)
                 if match:
                     subtitle = match.group(1).strip()
-            except:
-                pass
+            except Exception as e:
+                print(f"⚠️ Не удалось стянуть Subtitle для {pkg_id}: {e}")
 
-        # --- ХАК ДЛЯ СКРИНШОТОВ (Phone + Pad) ---
+        # СТРОГО IPHONE СКРИНШОТЫ
         screens = data.get('screenshotUrls', [])
-        if not screens:
-            screens = data.get('ipadScreenshotUrls', [])
+        icon_url = data.get('artworkUrl512', data.get('artworkUrl100', ''))
 
         return {
             'title': data.get('trackName', ''),
             'summary': subtitle, 
             'description': data.get('description', ''),
-            'icon': data.get('artworkUrl512', ''), 
-            'headerImage': '', 
+            'icon': icon_url, 
+            'headerImage': '',
             'screenshots': screens
         }
     else:
@@ -274,7 +281,7 @@ def run_check_for_item(key, info, user_reports_dict, single_mode=False):
             msg_prefix = "🔄 ОТКАТ (A/B ТЕСТ)" if is_rollback else "⚠️ ИЗМЕНЕНИЕ"
             alert_msg = f"{msg_prefix} {os_icon} [{info['geo'].upper()}]\n📦 {new_m['title']}\nИзменено: {', '.join(changed)}"
 
-            if is_rollback: alert_msg += "\n\n⚠️ Тексты вернулись к одной из прошлых версий."
+            if is_rollback: alert_msg += "\n\n⚠️ Тексты вернулись к одной из прошлых версий. Вероятно, A/B тест завершен."
             
             send_telegram_msg(alert_msg, c_id)
 
@@ -295,7 +302,7 @@ def run_check_for_item(key, info, user_reports_dict, single_mode=False):
 
                 raw_ai_analysis = analyze_changes_with_ai(old_t, new_m['title'], old_s, new_m['summary'], old_d, new_m['description'])
                 clean_ai_analysis = raw_ai_analysis.replace('*', '').replace('_', '').replace('#', '').replace('`', '')
-                ai_msg = f"🤖 Анализ ИИ:\n\n{clean_ai_analysis}"
+                ai_msg = f"🤖 Анализ ИИ (Сайт):\n\n{clean_ai_analysis}"
                 send_telegram_msg(ai_msg, c_id)
 
             info['history'].append(info['current'])
