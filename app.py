@@ -130,10 +130,13 @@ def fetch_app_data(pkg_id, locale):
                 raise Exception(f"Приложение {pkg_id} не найдено в App Store ({c_code})")
         
         data = res['results'][0]
-        subtitle = data.get('subtitle', '')
+        
+        # БЕРЕМ СКРИНШОТЫ СТРОГО ИЗ API APPLE (Никакого парсинга HTML для картинок!)
         screens = data.get('screenshotUrls', [])
         
-        if not subtitle or not screens:
+        # ПАРСИМ ИЗ HTML ТОЛЬКО САБТАЙТЛ (если его нет в API)
+        subtitle = data.get('subtitle', '')
+        if not subtitle:
             try:
                 app_url = f"https://apps.apple.com/{c_code.lower()}/app/id{pkg_id}"
                 headers = {
@@ -141,24 +144,9 @@ def fetch_app_data(pkg_id, locale):
                     "Accept-Language": f"{locale},en-US;q=0.9,en;q=0.8"
                 }
                 html = requests.get(app_url, headers=headers, timeout=10).text
-                
-                if not subtitle:
-                    match = re.search(r'<h2[^>]*class="[^"]*subtitle[^"]*"[^>]*>(.*?)</h2>', html, re.IGNORECASE | re.DOTALL)
-                    if match:
-                        subtitle = re.sub(r'<[^>]+>', '', match.group(1)).strip()
-                
-                if not screens:
-                    # БРОНЕБОЙНЫЙ ПАРСЕР СКРИНОВ ИЗ SEO-БЛОКА
-                    json_ld_match = re.search(r'<script type="application/ld\+json"[^>]*>(.*?)</script>', html, re.DOTALL)
-                    if json_ld_match:
-                        ld_data = json.loads(json_ld_match.group(1).strip())
-                        if isinstance(ld_data, dict) and 'screenshot' in ld_data:
-                            scrs = ld_data['screenshot']
-                            if isinstance(scrs, str):
-                                screens = [scrs]
-                            elif isinstance(scrs, list):
-                                screens = [s for s in scrs if isinstance(s, str)]
-                        
+                match = re.search(r'<h2[^>]*class="[^"]*subtitle[^"]*"[^>]*>(.*?)</h2>', html, re.IGNORECASE | re.DOTALL)
+                if match:
+                    subtitle = re.sub(r'<[^>]+>', '', match.group(1)).strip()
             except Exception as e:
                 print(f"⚠️ Ошибка HTML-парсера для {pkg_id}: {e}")
 
