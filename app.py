@@ -148,22 +148,16 @@ def fetch_app_data(pkg_id, locale):
                         subtitle = re.sub(r'<[^>]+>', '', match.group(1)).strip()
                 
                 if not screens:
-                    # Ищем ТОЛЬКО jpeg/png
-                    scr_matches = re.findall(r'<source[^>]*srcset="([^"\s]+)[^"]*"[^>]*type="image/jpeg"', html)
-                    if not scr_matches:
-                        scr_matches = re.findall(r'<img[^>]*class="[^"]*we-artwork__image[^"]*"[^>]*src="([^"]+)"', html)
-                    
-                    clean_screens = []
-                    for s in scr_matches:
-                        # ЗАЩИТА ОТ ИКОНОК: Если картинка квадратная (512x512, 100x100) — это иконка, пропускаем
-                        res_match = re.search(r'/(\d+)x(\d+)bb', s)
-                        if res_match and res_match.group(1) == res_match.group(2):
-                            continue
-                        
-                        if s not in clean_screens:
-                            clean_screens.append(s)
-                    if clean_screens:
-                        screens = clean_screens
+                    # БРОНЕБОЙНЫЙ ПАРСЕР СКРИНОВ ИЗ SEO-БЛОКА
+                    json_ld_match = re.search(r'<script type="application/ld\+json"[^>]*>(.*?)</script>', html, re.DOTALL)
+                    if json_ld_match:
+                        ld_data = json.loads(json_ld_match.group(1).strip())
+                        if isinstance(ld_data, dict) and 'screenshot' in ld_data:
+                            scrs = ld_data['screenshot']
+                            if isinstance(scrs, str):
+                                screens = [scrs]
+                            elif isinstance(scrs, list):
+                                screens = [s for s in scrs if isinstance(s, str)]
                         
             except Exception as e:
                 print(f"⚠️ Ошибка HTML-парсера для {pkg_id}: {e}")
