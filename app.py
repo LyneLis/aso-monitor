@@ -131,39 +131,67 @@ def fetch_app_data(pkg_id, locale):
         
         data = res['results'][0]
         
-        # --- КАСКАДНЫЙ СБОР СКРИНШОТОВ (Только API, без HTML) ---
+        # Берем API-скрины
         screens = data.get('screenshotUrls', [])
-        
-        # Если для этого языка скринов нет, берем дефолтные для страны
-        if not screens:
-            url_def = f"https://itunes.apple.com/lookup?id={pkg_id}&country={c_code}"
-            res_def = requests.get(url_def, timeout=10).json()
-            if res_def.get('resultCount', 0) > 0:
-                screens = res_def['results'][0].get('screenshotUrls', [])
-                
-        # Если iPhone скринов ВООБЩЕ нет в природе, спасаемся iPad-скринами
         if not screens:
             screens = data.get('ipadScreenshotUrls', [])
-            if not screens and 'res_def' in locals() and res_def.get('resultCount', 0) > 0:
-                screens = res_def['results'][0].get('ipadScreenshotUrls', [])
 
-        # --- СБОР САБТАЙТЛА ИЗ HTML ---
+        # Если чего-то не хватает — СНАЙПЕРСКИЙ ВЕБ-ПАРСИНГ
         subtitle = data.get('subtitle', '')
-        if not subtitle:
+        if not subtitle or not screens:
             try:
                 app_url = f"https://apps.apple.com/{c_code.lower()}/app/id{pkg_id}"
                 headers = {
                     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Safari/605.1.15",
-                    "Accept-Language": f"{locale},en-US;q=0.9,en;q=0.8"
+                    "Accept-Language": f"{locale},en-US;q=0.9"
                 }
                 html = requests.get(app_url, headers=headers, timeout=10).text
-                match = re.search(r'<h2[^>]*class="[^"]*subtitle[^"]*"[^>]*>(.*?)</h2>', html, re.IGNORECASE | re.DOTALL)
-                if match:
-                    subtitle = re.sub(r'<[^>]+>', '', match.group(1)).strip()
+                
+                # Парсинг сабтайтла
+                if not subtitle:
+                    match = re.search(r'<h2[^>]*class="[^"]*subtitle[^"]*"[^>]*>(.*?)</h2>', html, re.IGNORECASE | re.DOTALL)
+                    if match:
+                        subtitle = re.sub(r'<[^>]+>', '', match.group(1)).strip()
+                
+                # Парсинг скринов (Строго в контейнере скриншотов + фильтр квадратов)
+                if not screens:
+                    # Ищем блок карусели
+                    scr_block = re.search(r'we-screenshot-viewer(.*?)</ul>', html, re.IGNORECASE | re.DOTALL)
+                    target_html = scr_block.group(1) if scr_block else html
+                    
+                    scr_matches = re.findall(r'<source[^>]*srcset="([^"\s]+)[^"]*"[^>]*type="image/jpeg"', target_html)
+                    if not scr_matches:
+                        scr_matches = re.findall(r'<source[^>]*srcset="([^"\s]+)[^"]*"[^>]*type="image/webp"', target_html)
+                    if not scr_matches:
+                        scr_matches = re.findall(r'<img[^>]*class="[^"]*we-artwork__image[^"]*"[^>]*src="([^"]+)"', target_html)
+                    
+                    clean_screens = []
+                    for s in scr_matches:
+                        # Защита 2: Математический фильтр разрешений
+                        res_match = re.search(r'/(\d+)x(\d+)[a-zA-Z]*\.', s)
+                        if res_match:
+                            w, h = res_match.group(1), res_match.group(2)
+                            if w == h: # Это квадрат = иконка
+                                continue
+                            if h == '0' and int(w) < 300: # Мелкие левые иконки
+                                continue
+                                
+                        s_jpg = s.replace('.webp', '.jpg').replace('w.webp', 'bb.jpg').replace('w.png', 'bb.png')
+                        if s_jpg not in clean_screens:
+                            clean_screens.append(s_jpg)
+                    
+                    if clean_screens:
+                        screens = clean_screens
+                        
             except Exception as e:
                 print(f"⚠️ Ошибка HTML-парсера для {pkg_id}: {e}")
 
+        # Убеждаемся, что все скрины в JPG для Telegram
+        screens = [s.replace('.webp', '.jpg') for s in screens]
+
         icon_url = data.get('artworkUrl512', data.get('artworkUrl100', ''))
+        if icon_url:
+            icon_url = icon_url.replace('.webp', '.jpg')
 
         return {
             'title': data.get('trackName', ''),
