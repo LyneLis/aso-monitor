@@ -148,13 +148,18 @@ def fetch_app_data(pkg_id, locale):
                         subtitle = re.sub(r'<[^>]+>', '', match.group(1)).strip()
                 
                 if not screens:
-                    # Ищем ТОЛЬКО jpeg/png для Телеграма
+                    # Ищем ТОЛЬКО jpeg/png
                     scr_matches = re.findall(r'<source[^>]*srcset="([^"\s]+)[^"]*"[^>]*type="image/jpeg"', html)
                     if not scr_matches:
                         scr_matches = re.findall(r'<img[^>]*class="[^"]*we-artwork__image[^"]*"[^>]*src="([^"]+)"', html)
                     
                     clean_screens = []
                     for s in scr_matches:
+                        # ЗАЩИТА ОТ ИКОНОК: Если картинка квадратная (512x512, 100x100) — это иконка, пропускаем
+                        res_match = re.search(r'/(\d+)x(\d+)bb', s)
+                        if res_match and res_match.group(1) == res_match.group(2):
+                            continue
+                        
                         if s not in clean_screens:
                             clean_screens.append(s)
                     if clean_screens:
@@ -282,8 +287,6 @@ def run_check_for_item(key, info, user_reports_dict, single_mode=False):
 
             if old.get('icon') and old.get('icon') != 'nan' and new_icon != old['icon']: changed.append("Иконка")
             if old.get('header_image') and old.get('header_image') != 'nan' and new_header != old.get('header_image'): changed.append("Feature Graphic")
-            
-            # ИСПРАВЛЕНИЕ: Всегда фиксируем изменение скринов, если списки не совпадают
             if new_scr != old_scr_list: changed.append("Скриншоты")
 
         if changed:

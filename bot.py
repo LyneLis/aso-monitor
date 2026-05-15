@@ -130,13 +130,18 @@ def fetch_app_data(pkg_id, locale):
                         subtitle = re.sub(r'<[^>]+>', '', match.group(1)).strip()
                 
                 if not screens:
-                    # Ищем ТОЛЬКО jpeg/png для Телеграма
+                    # Ищем ТОЛЬКО jpeg/png
                     scr_matches = re.findall(r'<source[^>]*srcset="([^"\s]+)[^"]*"[^>]*type="image/jpeg"', html)
                     if not scr_matches:
                         scr_matches = re.findall(r'<img[^>]*class="[^"]*we-artwork__image[^"]*"[^>]*src="([^"]+)"', html)
                     
                     clean_screens = []
                     for s in scr_matches:
+                        # ЗАЩИТА ОТ ИКОНОК: Квадратные картинки выкидываем
+                        res_match = re.search(r'/(\d+)x(\d+)bb', s)
+                        if res_match and res_match.group(1) == res_match.group(2):
+                            continue
+                            
                         if s not in clean_screens:
                             clean_screens.append(s)
                     if clean_screens:
@@ -159,7 +164,7 @@ def fetch_app_data(pkg_id, locale):
         return gp_app(pkg_id, lang=l_code, country=c_code)
 
 def check_apps():
-    print(f"--- СТАРТ ПРОВЕРКИ v3.13 ({get_minsk_time()}) ---")
+    print(f"--- СТАРТ ПРОВЕРКИ v3.14 ({get_minsk_time()}) ---")
     try:
         gc = gspread.service_account_from_dict(service_account_info)
         sh = gc.open_by_url(SPREADSHEET_URL)
@@ -217,8 +222,6 @@ def check_apps():
                 
                 if old_icon and new_icon != old_icon: changes.append("Иконка")
                 if old_header and new_header != old_header: changes.append("Feature Graphic")
-                
-                # ИСПРАВЛЕНИЕ: Всегда сообщаем об изменении скринов
                 if new_scr != old_scr: changes.append("Скриншоты")
 
             if changes:
@@ -248,10 +251,9 @@ def check_apps():
                             media.append({"type": "photo", "media": scr_url, "parse_mode": "HTML", "caption": caption})
                         if media:
                             resp = requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMediaGroup", json={"chat_id": c_id, "media": media})
-                            # ИСПРАВЛЕНИЕ: Если Телеграм отказался грузить (например из-за webp/размера), шлем текстовый алерт!
                             if resp.status_code != 200:
                                 requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={
-                                    "chat_id": c_id, "text": f"⚠️ Скриншоты изменились, но Telegram не смог их отобразить.\nПроверьте приложение вручную!"
+                                    "chat_id": c_id, "text": f"⚠️ Скриншоты изменились, но Telegram не смог их отобразить (ошибка {resp.status_code}).\nПроверьте приложение вручную!"
                                 })
                     
                     if any(k in ["Название", "SD", "Subtitle", "FD", "Описание"] for k in changes):
