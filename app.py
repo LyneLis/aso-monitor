@@ -121,7 +121,6 @@ def fetch_app_data(pkg_id, locale):
     if str(pkg_id).isdigit():
         apple_lang = locale.replace('-', '_').lower()
         url = f"https://itunes.apple.com/lookup?id={pkg_id}&country={c_code}&lang={apple_lang}"
-        
         res = requests.get(url).json()
         
         if res['resultCount'] == 0:
@@ -132,22 +131,24 @@ def fetch_app_data(pkg_id, locale):
         
         data = res['results'][0]
         
+        # --- БРОНЕБОЙНЫЙ ХАК ДЛЯ САБТАЙТЛА iOS ---
         subtitle = data.get('subtitle', '')
         if not subtitle:
             try:
                 app_url = data.get('trackViewUrl', f"https://apps.apple.com/{c_code.lower()}/app/id{pkg_id}")
+                # Маскируемся под Chrome, чтобы Apple не отбил запрос
                 headers = {
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
-                    "Accept-Language": f"{locale},en-US;q=0.9,en;q=0.8"
+                    "Accept-Language": f"{locale},en-US;q=0.9"
                 }
                 html = requests.get(app_url, headers=headers, timeout=5).text
-                match = re.search(r'app-header__subtitle[^>]*>([^<]+)<', html)
+                match = re.search(r'class="[^"]*app-header__subtitle[^"]*"[^>]*>(.*?)</h2', html, re.IGNORECASE | re.DOTALL)
                 if match:
-                    subtitle = match.group(1).strip()
+                    subtitle = re.sub(r'<[^>]+>', '', match.group(1)).strip()
             except Exception as e:
-                print(f"⚠️ Не удалось стянуть Subtitle для {pkg_id}: {e}")
+                print(f"⚠️ Ошибка парсинга сабтайтла: {e}")
 
-        # СТРОГО IPHONE СКРИНШОТЫ
+        # Строго iPhone скриншоты
         screens = data.get('screenshotUrls', [])
         icon_url = data.get('artworkUrl512', data.get('artworkUrl100', ''))
 
@@ -236,7 +237,11 @@ def save_data(data):
 
 def clean_val(val):
     s_val = str(val).strip()
-    if s_val.lower() in ['nan', '', 'none', '#n/a'] or '#error' in s_val.lower():
+    # Если это NaN от таблицы, возвращаем пустую строку
+    if s_val.lower() in ['nan', 'none', '#n/a']:
+        return ""
+    # Если это реальная ошибка формулы — возвращаем None
+    if '#error' in s_val.lower():
         return None
     return s_val
 
@@ -281,7 +286,7 @@ def run_check_for_item(key, info, user_reports_dict, single_mode=False):
             msg_prefix = "🔄 ОТКАТ (A/B ТЕСТ)" if is_rollback else "⚠️ ИЗМЕНЕНИЕ"
             alert_msg = f"{msg_prefix} {os_icon} [{info['geo'].upper()}]\n📦 {new_m['title']}\nИзменено: {', '.join(changed)}"
 
-            if is_rollback: alert_msg += "\n\n⚠️ Тексты вернулись к одной из прошлых версий. Вероятно, A/B тест завершен."
+            if is_rollback: alert_msg += "\n\n⚠️ Тексты вернулись к одной из прошлых версий."
             
             send_telegram_msg(alert_msg, c_id)
 
