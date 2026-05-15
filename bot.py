@@ -273,4 +273,7 @@ def check_apps():
         if stats['updated'] > 0:
             report = (f"⚙️ Системный авто-отчет\n⏰ {get_minsk_time()}\n"
                       f"📦 Проверено: {stats['checked']}\n⚠️ Обновлено: {stats['updated']}")
-            requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage
+            requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": c_id, "text": report})
+
+if __name__ == "__main__":
+    check_apps()
