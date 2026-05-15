@@ -119,18 +119,20 @@ def fetch_app_data(pkg_id, locale):
     if l_code == "iw": l_code = "iw"
 
     if str(pkg_id).isdigit():
-        url = f"https://itunes.apple.com/lookup?id={pkg_id}&country={c_code}"
+        apple_lang = locale.replace('-', '_').lower()
+        url = f"https://itunes.apple.com/lookup?id={pkg_id}&country={c_code}&lang={apple_lang}"
         res = requests.get(url, timeout=10).json()
         
         if res['resultCount'] == 0:
-            raise Exception(f"Приложение {pkg_id} не найдено в App Store ({c_code})")
+            url_fallback = f"https://itunes.apple.com/lookup?id={pkg_id}&country={c_code}"
+            res = requests.get(url_fallback).json()
+            if res['resultCount'] == 0:
+                raise Exception(f"Приложение {pkg_id} не найдено в App Store ({c_code})")
         
         data = res['results'][0]
-        
         subtitle = data.get('subtitle', '')
         screens = data.get('screenshotUrls', [])
         
-        # Если API жадничает, парсим HTML как реальный пользователь Mac
         if not subtitle or not screens:
             try:
                 app_url = f"https://apps.apple.com/{c_code.lower()}/app/id{pkg_id}"
@@ -140,15 +142,14 @@ def fetch_app_data(pkg_id, locale):
                 }
                 html = requests.get(app_url, headers=headers, timeout=10).text
                 
-                # Ищем Subtitle в HTML
                 if not subtitle:
                     match = re.search(r'<h2[^>]*class="[^"]*subtitle[^"]*"[^>]*>(.*?)</h2>', html, re.IGNORECASE | re.DOTALL)
                     if match:
                         subtitle = re.sub(r'<[^>]+>', '', match.group(1)).strip()
                 
-                # Ищем скриншоты в HTML
                 if not screens:
-                    scr_matches = re.findall(r'<source[^>]*srcset="([^"\s]+)[^"]*"[^>]*type="image/webp"', html)
+                    # Ищем ТОЛЬКО jpeg/png для Телеграма
+                    scr_matches = re.findall(r'<source[^>]*srcset="([^"\s]+)[^"]*"[^>]*type="image/jpeg"', html)
                     if not scr_matches:
                         scr_matches = re.findall(r'<img[^>]*class="[^"]*we-artwork__image[^"]*"[^>]*src="([^"]+)"', html)
                     
@@ -213,7 +214,6 @@ def load_data():
                 try: c_log = json.loads(str(row['check_log']))
                 except: pass
             
-            # ЗАЩИТА ОТ NAN: Явное приведение пустых значений к чистой строке
             data[u_key] = {
                 "package_id": p_id, "geo": geo, "chat_id": c_id,
                 "current": {
@@ -271,6 +271,7 @@ def run_check_for_item(key, info, user_reports_dict, single_mode=False):
         old_t = clean_val(old['title'])
         old_s = clean_val(old['summary'])
         old_d = clean_val(old['description'])
+        old_scr_list = old.get('screenshots', [])
         
         is_table_error = (old_t is None or old_s is None or old_d is None)
 
@@ -281,7 +282,9 @@ def run_check_for_item(key, info, user_reports_dict, single_mode=False):
 
             if old.get('icon') and old.get('icon') != 'nan' and new_icon != old['icon']: changed.append("Иконка")
             if old.get('header_image') and old.get('header_image') != 'nan' and new_header != old.get('header_image'): changed.append("Feature Graphic")
-            if old.get('screenshots') and new_scr != old.get('screenshots'): changed.append("Скриншоты")
+            
+            # ИСПРАВЛЕНИЕ: Всегда фиксируем изменение скринов, если списки не совпадают
+            if new_scr != old_scr_list: changed.append("Скриншоты")
 
         if changed:
             updates = 1
