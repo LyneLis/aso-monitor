@@ -123,58 +123,47 @@ def fetch_app_data(pkg_id, locale):
         url = f"https://itunes.apple.com/lookup?id={pkg_id}&country={c_code}&lang={apple_lang}"
         res = requests.get(url, timeout=10).json()
         
-        if res['resultCount'] == 0:
+        if res.get('resultCount', 0) == 0:
             url_fallback = f"https://itunes.apple.com/lookup?id={pkg_id}&country={c_code}"
-            res = requests.get(url_fallback).json()
-            if res['resultCount'] == 0:
+            res = requests.get(url_fallback, timeout=10).json()
+            if res.get('resultCount', 0) == 0:
                 raise Exception(f"Приложение {pkg_id} не найдено в App Store ({c_code})")
         
         data = res['results'][0]
-        subtitle = data.get('subtitle', '')
+        
+        # --- КАСКАДНЫЙ СБОР СКРИНШОТОВ (Только API, без HTML) ---
         screens = data.get('screenshotUrls', [])
         
-        if not subtitle or not screens:
+        # Если для этого языка скринов нет, берем дефолтные для страны
+        if not screens:
+            url_def = f"https://itunes.apple.com/lookup?id={pkg_id}&country={c_code}"
+            res_def = requests.get(url_def, timeout=10).json()
+            if res_def.get('resultCount', 0) > 0:
+                screens = res_def['results'][0].get('screenshotUrls', [])
+                
+        # Если iPhone скринов ВООБЩЕ нет в природе, спасаемся iPad-скринами
+        if not screens:
+            screens = data.get('ipadScreenshotUrls', [])
+            if not screens and 'res_def' in locals() and res_def.get('resultCount', 0) > 0:
+                screens = res_def['results'][0].get('ipadScreenshotUrls', [])
+
+        # --- СБОР САБТАЙТЛА ИЗ HTML ---
+        subtitle = data.get('subtitle', '')
+        if not subtitle:
             try:
                 app_url = f"https://apps.apple.com/{c_code.lower()}/app/id{pkg_id}"
                 headers = {
                     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Safari/605.1.15",
-                    "Accept-Language": f"{locale},en-US;q=0.9"
+                    "Accept-Language": f"{locale},en-US;q=0.9,en;q=0.8"
                 }
                 html = requests.get(app_url, headers=headers, timeout=10).text
-                
-                # Парсим сабтайтл
-                if not subtitle:
-                    match = re.search(r'<h2[^>]*class="[^"]*subtitle[^"]*"[^>]*>(.*?)</h2>', html, re.IGNORECASE | re.DOTALL)
-                    if match:
-                        subtitle = re.sub(r'<[^>]+>', '', match.group(1)).strip()
-                
-                # УМНЫЙ ПАРСИНГ СКРИНШОТОВ (перебираем все JSON-блоки)
-                if not screens:
-                    json_blocks = re.findall(r'<script type="application/ld\+json"[^>]*>(.*?)</script>', html, re.IGNORECASE | re.DOTALL)
-                    for block in json_blocks:
-                        try:
-                            ld_data = json.loads(block.strip())
-                            # Ищем блок именно с приложением, а не с хлебными крошками
-                            if ld_data.get('@type') == 'SoftwareApplication':
-                                scrs = ld_data.get('screenshot', [])
-                                if isinstance(scrs, str):
-                                    screens = [scrs]
-                                elif isinstance(scrs, list):
-                                    screens = [s for s in scrs if isinstance(s, str)]
-                                break # Нашли скрины — выходим из цикла
-                        except:
-                            pass
-                            
+                match = re.search(r'<h2[^>]*class="[^"]*subtitle[^"]*"[^>]*>(.*?)</h2>', html, re.IGNORECASE | re.DOTALL)
+                if match:
+                    subtitle = re.sub(r'<[^>]+>', '', match.group(1)).strip()
             except Exception as e:
                 print(f"⚠️ Ошибка HTML-парсера для {pkg_id}: {e}")
 
-        # Конвертируем все webp в jpg, чтобы Телеграм не ругался при отправке коллажей
-        if screens:
-            screens = [s.replace('.webp', '.jpg').replace('w.webp', 'bb.jpg') for s in screens]
-
         icon_url = data.get('artworkUrl512', data.get('artworkUrl100', ''))
-        if icon_url:
-            icon_url = icon_url.replace('.webp', '.jpg')
 
         return {
             'title': data.get('trackName', ''),
