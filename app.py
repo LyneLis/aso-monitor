@@ -130,27 +130,51 @@ def fetch_app_data(pkg_id, locale):
                 raise Exception(f"Приложение {pkg_id} не найдено в App Store ({c_code})")
         
         data = res['results'][0]
-        
-        # БЕРЕМ СКРИНШОТЫ СТРОГО ИЗ API APPLE (Никакого парсинга HTML для картинок!)
+        subtitle = data.get('subtitle', '')
         screens = data.get('screenshotUrls', [])
         
-        # ПАРСИМ ИЗ HTML ТОЛЬКО САБТАЙТЛ (если его нет в API)
-        subtitle = data.get('subtitle', '')
-        if not subtitle:
+        if not subtitle or not screens:
             try:
                 app_url = f"https://apps.apple.com/{c_code.lower()}/app/id{pkg_id}"
                 headers = {
                     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Safari/605.1.15",
-                    "Accept-Language": f"{locale},en-US;q=0.9,en;q=0.8"
+                    "Accept-Language": f"{locale},en-US;q=0.9"
                 }
                 html = requests.get(app_url, headers=headers, timeout=10).text
-                match = re.search(r'<h2[^>]*class="[^"]*subtitle[^"]*"[^>]*>(.*?)</h2>', html, re.IGNORECASE | re.DOTALL)
-                if match:
-                    subtitle = re.sub(r'<[^>]+>', '', match.group(1)).strip()
+                
+                # Парсим сабтайтл
+                if not subtitle:
+                    match = re.search(r'<h2[^>]*class="[^"]*subtitle[^"]*"[^>]*>(.*?)</h2>', html, re.IGNORECASE | re.DOTALL)
+                    if match:
+                        subtitle = re.sub(r'<[^>]+>', '', match.group(1)).strip()
+                
+                # УМНЫЙ ПАРСИНГ СКРИНШОТОВ (перебираем все JSON-блоки)
+                if not screens:
+                    json_blocks = re.findall(r'<script type="application/ld\+json"[^>]*>(.*?)</script>', html, re.IGNORECASE | re.DOTALL)
+                    for block in json_blocks:
+                        try:
+                            ld_data = json.loads(block.strip())
+                            # Ищем блок именно с приложением, а не с хлебными крошками
+                            if ld_data.get('@type') == 'SoftwareApplication':
+                                scrs = ld_data.get('screenshot', [])
+                                if isinstance(scrs, str):
+                                    screens = [scrs]
+                                elif isinstance(scrs, list):
+                                    screens = [s for s in scrs if isinstance(s, str)]
+                                break # Нашли скрины — выходим из цикла
+                        except:
+                            pass
+                            
             except Exception as e:
                 print(f"⚠️ Ошибка HTML-парсера для {pkg_id}: {e}")
 
+        # Конвертируем все webp в jpg, чтобы Телеграм не ругался при отправке коллажей
+        if screens:
+            screens = [s.replace('.webp', '.jpg').replace('w.webp', 'bb.jpg') for s in screens]
+
         icon_url = data.get('artworkUrl512', data.get('artworkUrl100', ''))
+        if icon_url:
+            icon_url = icon_url.replace('.webp', '.jpg')
 
         return {
             'title': data.get('trackName', ''),
