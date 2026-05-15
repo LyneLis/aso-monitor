@@ -119,46 +119,58 @@ def fetch_app_data(pkg_id, locale):
     if l_code == "iw": l_code = "iw"
 
     if str(pkg_id).isdigit():
-        apple_lang = locale.replace('-', '_').lower()
-        url = f"https://itunes.apple.com/lookup?id={pkg_id}&country={c_code}&lang={apple_lang}"
-        res = requests.get(url).json()
+        url = f"https://itunes.apple.com/lookup?id={pkg_id}&country={c_code}"
+        res = requests.get(url, timeout=10).json()
         
         if res['resultCount'] == 0:
-            url_fallback = f"https://itunes.apple.com/lookup?id={pkg_id}&country={c_code}"
-            res = requests.get(url_fallback).json()
-            if res['resultCount'] == 0:
-                raise Exception(f"Приложение {pkg_id} не найдено в App Store ({c_code})")
+            raise Exception(f"Приложение {pkg_id} не найдено в App Store ({c_code})")
         
         data = res['results'][0]
         
-        # --- БРОНЕБОЙНЫЙ ХАК ДЛЯ САБТАЙТЛА iOS ---
         subtitle = data.get('subtitle', '')
-        if not subtitle:
-            try:
-                app_url = data.get('trackViewUrl', f"https://apps.apple.com/{c_code.lower()}/app/id{pkg_id}")
-                # Маскируемся под Chrome, чтобы Apple не отбил запрос
-                headers = {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
-                    "Accept-Language": f"{locale},en-US;q=0.9"
-                }
-                html = requests.get(app_url, headers=headers, timeout=5).text
-                match = re.search(r'class="[^"]*app-header__subtitle[^"]*"[^>]*>(.*?)</h2', html, re.IGNORECASE | re.DOTALL)
-                if match:
-                    subtitle = re.sub(r'<[^>]+>', '', match.group(1)).strip()
-            except Exception as e:
-                print(f"⚠️ Ошибка парсинга сабтайтла: {e}")
-
-        # Строго iPhone скриншоты
         screens = data.get('screenshotUrls', [])
+        
+        # Если API жадничает, парсим HTML как реальный пользователь Mac
+        if not subtitle or not screens:
+            try:
+                app_url = f"https://apps.apple.com/{c_code.lower()}/app/id{pkg_id}"
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Safari/605.1.15",
+                    "Accept-Language": f"{locale},en-US;q=0.9,en;q=0.8"
+                }
+                html = requests.get(app_url, headers=headers, timeout=10).text
+                
+                # Ищем Subtitle в HTML
+                if not subtitle:
+                    match = re.search(r'<h2[^>]*class="[^"]*subtitle[^"]*"[^>]*>(.*?)</h2>', html, re.IGNORECASE | re.DOTALL)
+                    if match:
+                        subtitle = re.sub(r'<[^>]+>', '', match.group(1)).strip()
+                
+                # Ищем скриншоты в HTML
+                if not screens:
+                    scr_matches = re.findall(r'<source[^>]*srcset="([^"\s]+)[^"]*"[^>]*type="image/webp"', html)
+                    if not scr_matches:
+                        scr_matches = re.findall(r'<img[^>]*class="[^"]*we-artwork__image[^"]*"[^>]*src="([^"]+)"', html)
+                    
+                    clean_screens = []
+                    for s in scr_matches:
+                        if s not in clean_screens:
+                            clean_screens.append(s)
+                    if clean_screens:
+                        screens = clean_screens
+                        
+            except Exception as e:
+                print(f"⚠️ Ошибка HTML-парсера для {pkg_id}: {e}")
+
         icon_url = data.get('artworkUrl512', data.get('artworkUrl100', ''))
 
         return {
             'title': data.get('trackName', ''),
-            'summary': subtitle, 
+            'summary': subtitle or '', 
             'description': data.get('description', ''),
-            'icon': icon_url, 
+            'icon': icon_url or '', 
             'headerImage': '',
-            'screenshots': screens
+            'screenshots': screens or []
         }
     else:
         return gp_app(pkg_id, lang=l_code, country=c_code)
@@ -193,7 +205,7 @@ def load_data():
         for _, row in df.iterrows():
             if pd.isna(row['package_id']) or pd.isna(row['geo']): continue
             p_id, geo = str(row['package_id']).strip(), str(row['geo']).strip()
-            c_id = str(row.get('chat_id', '')).strip()
+            c_id = "" if pd.isna(row.get('chat_id')) else str(row['chat_id']).strip()
             
             u_key = f"{p_id}_{geo}_{c_id}" 
             c_log = []
@@ -201,17 +213,18 @@ def load_data():
                 try: c_log = json.loads(str(row['check_log']))
                 except: pass
             
+            # ЗАЩИТА ОТ NAN: Явное приведение пустых значений к чистой строке
             data[u_key] = {
                 "package_id": p_id, "geo": geo, "chat_id": c_id,
                 "current": {
-                    "title": str(row['title']), 
-                    "summary": str(row['summary']), 
-                    "description": str(row['description']),
-                    "icon": str(row.get('icon', '')),
-                    "header_image": str(row.get('header_image', '')),
-                    "screenshots": json.loads(row['screenshots']) if 'screenshots' in df.columns and isinstance(row.get('screenshots'), str) else []
+                    "title": "" if pd.isna(row.get('title')) else str(row.get('title')).strip(), 
+                    "summary": "" if pd.isna(row.get('summary')) else str(row.get('summary')).strip(), 
+                    "description": "" if pd.isna(row.get('description')) else str(row.get('description')).strip(),
+                    "icon": "" if pd.isna(row.get('icon')) else str(row.get('icon')).strip(),
+                    "header_image": "" if pd.isna(row.get('header_image')) else str(row.get('header_image')).strip(),
+                    "screenshots": json.loads(row['screenshots']) if 'screenshots' in df.columns and not pd.isna(row.get('screenshots')) else []
                 },
-                "history": json.loads(row['history']) if 'history' in df.columns and isinstance(row['history'], str) else [],
+                "history": json.loads(row['history']) if 'history' in df.columns and not pd.isna(row.get('history')) else [],
                 "check_log": c_log
             }
         return data
@@ -237,10 +250,8 @@ def save_data(data):
 
 def clean_val(val):
     s_val = str(val).strip()
-    # Если это NaN от таблицы, возвращаем пустую строку
-    if s_val.lower() in ['nan', 'none', '#n/a']:
+    if s_val.lower() in ['nan', 'none', '#n/a', '']:
         return ""
-    # Если это реальная ошибка формулы — возвращаем None
     if '#error' in s_val.lower():
         return None
     return s_val
