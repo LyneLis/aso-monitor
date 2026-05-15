@@ -207,4 +207,102 @@ def check_apps():
             new_icon, new_header, new_scr = str(res['icon']).strip(), str(res.get('headerImage', '')).strip(), res['screenshots']
 
             is_table_error = (old_t is None or old_s is None or old_d is None)
-            is_ios = str
+            is_ios = str(p_id).isdigit()
+
+            changes = []
+            if not is_table_error:
+                if new_t != old_t: changes.append("Название")
+                if new_s != old_s: changes.append("Subtitle" if is_ios else "SD")
+                if new_d != old_d: changes.append("Описание" if is_ios else "FD")
+                
+                if old_icon and new_icon != old_icon: changes.append("Иконка")
+                if old_header and new_header != old_header: changes.append("Feature Graphic")
+                
+                # ИСПРАВЛЕНИЕ: Всегда сообщаем об изменении скринов
+                if new_scr != old_scr: changes.append("Скриншоты")
+
+            if changes:
+                print(f"    ⚠️ Изменение в {p_id} ({full_geo})")
+                current_log.append({"time": get_minsk_time(), "status": f"🔴 Авто: Изменение ({', '.join(changes)})"})
+                
+                if has_owner:
+                    user_stats[c_id]['updated'] += 1
+                    is_rollback = any(new_t == past.get('title') and new_s == past.get('summary') for past in history[-3:])
+                    
+                    os_icon = "🍎" if is_ios else "🤖"
+                    msg_prefix = "🔄 АВТО-ОТКАТ" if is_rollback else "🔔 АВТО-ИЗМЕНЕНИЕ!"
+                    alert_msg = f"{msg_prefix} {os_icon} [{full_geo.upper()}]\n📦 {p_id}\n\nПоля: {', '.join(changes)}"
+                    
+                    requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": c_id, "text": alert_msg})
+                    
+                    if "Иконка" in changes:
+                        send_visual_diff(c_id, TOKEN, old_icon, new_icon, "Иконка", p_id, full_geo.upper())
+
+                    if "Feature Graphic" in changes:
+                        send_visual_diff(c_id, TOKEN, old_header, new_header, "Feature Graphic", p_id, full_geo.upper())
+                    
+                    if "Скриншоты" in changes and new_scr:
+                        media = []
+                        for idx, scr_url in enumerate(new_scr[:10]):
+                            caption = f"📱 <b>ОБНОВЛЕННЫЕ СКРИНШОТЫ</b> {os_icon}\n📦 {p_id} [{full_geo.upper()}]" if idx == 0 else ""
+                            media.append({"type": "photo", "media": scr_url, "parse_mode": "HTML", "caption": caption})
+                        if media:
+                            resp = requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMediaGroup", json={"chat_id": c_id, "media": media})
+                            # ИСПРАВЛЕНИЕ: Если Телеграм отказался грузить (например из-за webp/размера), шлем текстовый алерт!
+                            if resp.status_code != 200:
+                                requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={
+                                    "chat_id": c_id, "text": f"⚠️ Скриншоты изменились, но Telegram не смог их отобразить.\nПроверьте приложение вручную!"
+                                })
+                    
+                    if any(k in ["Название", "SD", "Subtitle", "FD", "Описание"] for k in changes):
+                        report = (
+                            f"ОТЧЕТ: {p_id}\n\n"
+                            f"--- БЫЛО ---\n{old_t}\n{old_s}\n\n"
+                            f"--- СТАЛО ---\n{new_t}\n{new_s}"
+                        )
+                        requests.post(f"https://api.telegram.org/bot{TOKEN}/sendDocument", 
+                                     data={"chat_id": c_id, "caption": f"📄 Отчет: {p_id}"}, 
+                                     files={"document": (f"report_{p_id}.txt", report.encode('utf-8'))})
+
+                        raw_ai_analysis = analyze_changes_with_ai(old_t, new_t, old_s, new_s, old_d, new_d)
+                        clean_ai_analysis = raw_ai_analysis.replace('*', '').replace('_', '').replace('#', '').replace('`', '')
+                        ai_msg = f"🤖 Анализ ИИ:\n\n{clean_ai_analysis}"
+                        
+                        requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
+                                      data={"chat_id": c_id, "text": ai_msg})
+
+                row['title'], row['summary'], row['description'] = new_t, new_s, new_d
+                row['icon'], row['header_image'] = new_icon, new_header
+                row['screenshots'] = json.dumps(new_scr, ensure_ascii=False)
+                history.append({"title": old_t, "summary": old_s, "description": old_d, "time": get_minsk_time()})
+                row['history'] = json.dumps(history[-5:], ensure_ascii=False)
+                
+            elif is_table_error:
+                print(f"    🛠 Восстановление данных из-за ошибки в таблице для {p_id}")
+                current_log.append({"time": get_minsk_time(), "status": "🟢 Авто: Исправление ошибки"})
+                row['title'], row['summary'], row['description'] = new_t, new_s, new_d
+                row['icon'], row['header_image'], row['screenshots'] = new_icon, new_header, json.dumps(new_scr, ensure_ascii=False)
+
+            else:
+                current_log.append({"time": get_minsk_time(), "status": "🟢 Авто: Без изменений"})
+                if not old_icon and new_icon:
+                    row['icon'], row['header_image'], row['screenshots'] = new_icon, new_header, json.dumps(new_scr, ensure_ascii=False)
+
+            row['check_log'] = json.dumps(current_log[-5:], ensure_ascii=False)
+
+            new_row_list = [row.get(h, "") for h in headers]
+            range_name = f"A{i}:{gspread.utils.rowcol_to_a1(i, len(headers))}"
+            worksheet.update(range_name, [new_row_list])
+            time.sleep(0.6)
+
+        except Exception as e:
+            print(f"    ❌ Ошибка {p_id}: {e}")
+
+    for c_id, stats in user_stats.items():
+        if stats['updated'] > 0:
+            report = (f"⚙️ Системный авто-отчет\n⏰ {get_minsk_time()}\n"
+                      f"📦 Проверено: {stats['checked']}\n⚠️ Обновлено: {stats['updated']}")
+            requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": c_id, "text": report})
+
+if __name__ == "__main__":
+    check_apps()
