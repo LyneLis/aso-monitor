@@ -206,7 +206,7 @@ def fetch_app_data(pkg_id, locale):
         return gp_app(pkg_id, lang=l_code, country=c_code)
 
 def check_apps():
-    print(f"--- СТАРТ ПРОВЕРКИ v3.21 ({get_minsk_time()}) ---")
+    print(f"--- СТАРТ ПРОВЕРКИ v3.22 (Анти-спам) ({get_minsk_time()}) ---")
     try:
         gc = gspread.service_account_from_dict(service_account_info)
         sh = gc.open_by_url(SPREADSHEET_URL)
@@ -218,7 +218,7 @@ def check_apps():
         print(f"❌ Ошибка API Таблиц: {e}"); return
 
     user_stats = {}
-    batched_ai_payloads = {} 
+    batched_alerts = {} # 🧺 КОРЗИНКА: Сюда мы будем складывать все изменения, чтобы отправить их разом
 
     for i, row_values in enumerate(all_rows[1:], start=2):
         row = {headers[j]: (row_values[j] if j < len(row_values) else "") for j in range(len(headers))}
@@ -275,52 +275,22 @@ def check_apps():
                     user_stats[c_id]['updated'] += 1
                     is_rollback = any(new_t == past.get('title') and new_s == past.get('summary') for past in history[-3:])
                     
-                    os_icon = "🍎" if is_ios else "🤖"
-                    msg_prefix = "🔄 АВТО-ОТКАТ" if is_rollback else "🔔 АВТО-ИЗМЕНЕНИЕ!"
-                    alert_msg = f"{msg_prefix} {os_icon} [{full_geo.upper()}]\n📦 {p_id}\n\nПоля: {', '.join(changes)}"
+                    b_key = (p_id, c_id, is_ios)
+                    if b_key not in batched_alerts:
+                        batched_alerts[b_key] = {'changes': {}, 'texts': {}, 'visuals': [], 'is_rollback': False}
                     
-                    requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": c_id, "text": alert_msg})
+                    batched_alerts[b_key]['changes'][full_geo] = changes
+                    if is_rollback: batched_alerts[b_key]['is_rollback'] = True
                     
                     if "Иконка" in changes:
-                        send_visual_diff(c_id, TOKEN, old_icon, new_icon, "Иконка", p_id, full_geo.upper())
-
+                        batched_alerts[b_key]['visuals'].append({'type': 'diff', 'name': 'Иконка', 'old': old_icon, 'new': new_icon, 'geo': full_geo})
                     if "Feature Graphic" in changes:
-                        send_visual_diff(c_id, TOKEN, old_header, new_header, "Feature Graphic", p_id, full_geo.upper())
-                    
+                        batched_alerts[b_key]['visuals'].append({'type': 'diff', 'name': 'Feature Graphic', 'old': old_header, 'new': new_header, 'geo': full_geo})
                     if "Скриншоты" in changes and new_scr:
-                        media = []
-                        for idx, scr_url in enumerate(new_scr[:10]):
-                            caption = f"📱 <b>ОБНОВЛЕННЫЕ СКРИНШОТЫ</b> {os_icon}\n📦 {p_id} [{full_geo.upper()}]" if idx == 0 else ""
-                            media.append({"type": "photo", "media": scr_url, "parse_mode": "HTML", "caption": caption})
-                        if media:
-                            resp = requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMediaGroup", json={"chat_id": c_id, "media": media})
-                            if resp.status_code != 200:
-                                requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={
-                                    "chat_id": c_id, "text": f"⚠️ Скриншоты изменились, но Telegram не смог их отобразить (ошибка {resp.status_code}).\nПроверьте приложение вручную!"
-                                })
-                    
+                        batched_alerts[b_key]['visuals'].append({'type': 'screens', 'screens': new_scr, 'geo': full_geo})
+                        
                     if any(k in ["Название", "SD", "Subtitle", "FD", "Описание"] for k in changes):
-                        report = (
-                            f"ОТЧЕТ ОБ ИЗМЕНЕНИЯХ\nПриложение: {p_id}\nЛокаль: {full_geo.upper()}\nДата: {get_minsk_time()}\n"
-                            f"{'='*40}\n\n"
-                            f"--- БЫЛО ---\n"
-                            f"Название: {old_t}\n"
-                            f"SD / Subtitle: {old_s}\n\n"
-                            f"FD / Описание:\n{old_d}\n\n"
-                            f"{'-'*40}\n\n"
-                            f"--- СТАЛО ---\n"
-                            f"Название: {new_t}\n"
-                            f"SD / Subtitle: {new_s}\n\n"
-                            f"FD / Описание:\n{new_d}\n"
-                        )
-                        requests.post(f"https://api.telegram.org/bot{TOKEN}/sendDocument", 
-                                     data={"chat_id": c_id, "caption": f"📄 Отчет: {p_id}"}, 
-                                     files={"document": (f"report_{p_id}.txt", report.encode('utf-8'))})
-
-                        b_key = (p_id, c_id)
-                        if b_key not in batched_ai_payloads:
-                            batched_ai_payloads[b_key] = {}
-                        batched_ai_payloads[b_key][full_geo] = {
+                        batched_alerts[b_key]['texts'][full_geo] = {
                             'old_t': old_t, 'new_t': new_t,
                             'old_s': old_s, 'new_s': new_s,
                             'old_d': old_d, 'new_d': new_d
@@ -353,20 +323,57 @@ def check_apps():
         except Exception as e:
             print(f"    ❌ Ошибка {p_id}: {e}")
 
-    # ПОСЛЕ ПРОВЕРКИ ВСЕЙ ТАБЛИЦЫ - ЗАПУСКАЕМ ИИ ДЛЯ КАЖДОГО ПРИЛОЖЕНИЯ РАЗОМ
-    for (pkg_id, c_id), loc_data in batched_ai_payloads.items():
-        if loc_data:
-            print(f"🧠 Запуск пакетного ИИ для {pkg_id} ({len(loc_data)} локалей)")
-            ai_msg = analyze_batched_changes_with_ai(loc_data)
+    # 🚀 ЭТАП 2: РАССЫЛКА ИЗ КОРЗИНКИ (По 1 сообщению на приложение)
+    for (pkg_id, c_id, is_ios), data in batched_alerts.items():
+        os_icon = "🍎" if is_ios else "🤖"
+        msg_prefix = "🔄 АВТО-ОТКАТ" if data['is_rollback'] else "🔔 ИЗМЕНЕНИЯ"
+        
+        # 1. Единое сводное сообщение
+        summary_msg = f"{msg_prefix} {os_icon}\n📦 {pkg_id}\n\n"
+        for geo, changes_list in data['changes'].items():
+            summary_msg += f"🌍 [{geo.upper()}]: {', '.join(changes_list)}\n"
+        requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": c_id, "text": summary_msg})
+        
+        # 2. Единый текстовый файл со всеми локалями
+        if data['texts']:
+            full_report = f"ОТЧЕТ ОБ ИЗМЕНЕНИЯХ\nПриложение: {pkg_id}\nДата: {get_minsk_time()}\n\n"
+            for geo, txt in data['texts'].items():
+                full_report += f"Локаль: {geo.upper()}\n{'='*40}\n"
+                full_report += f"--- БЫЛО ---\nНазвание: {txt['old_t']}\nSD/Subtitle: {txt['old_s']}\nFD:\n{txt['old_d']}\n\n"
+                full_report += f"--- СТАЛО ---\nНазвание: {txt['new_t']}\nSD/Subtitle: {txt['new_s']}\nFD:\n{txt['new_d']}\n\n"
+            
+            requests.post(f"https://api.telegram.org/bot{TOKEN}/sendDocument", 
+                         data={"chat_id": c_id, "caption": f"📄 Полный отчет: {pkg_id}"}, 
+                         files={"document": (f"report_{pkg_id}.txt", full_report.encode('utf-8'))})
+                         
+        # 3. Рассылка визуалов (Скриншоты, иконки)
+        for vis in data['visuals']:
+            geo = vis['geo'].upper()
+            if vis['type'] == 'diff':
+                send_visual_diff(c_id, TOKEN, vis['old'], vis['new'], vis['name'], pkg_id, geo)
+            elif vis['type'] == 'screens':
+                media = []
+                for idx, scr_url in enumerate(vis['screens'][:10]):
+                    caption = f"📱 <b>ОБНОВЛЕННЫЕ СКРИНШОТЫ</b> {os_icon}\n📦 {pkg_id} [{geo}]" if idx == 0 else ""
+                    media.append({"type": "photo", "media": scr_url, "parse_mode": "HTML", "caption": caption})
+                if media:
+                    resp = requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMediaGroup", json={"chat_id": c_id, "media": media})
+                    if resp.status_code != 200:
+                        requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={
+                            "chat_id": c_id, "text": f"⚠️ Скриншоты [{geo}] изменились, но Telegram не смог их отобразить."
+                        })
+                        
+        # 4. Один пакетный ИИ-анализ
+        if data['texts']:
+            print(f"🧠 Запуск ИИ для {pkg_id} ({len(data['texts'])} локалей)")
+            ai_msg = analyze_batched_changes_with_ai(data['texts'])
             clean_ai = ai_msg.replace('*', '').replace('_', '').replace('#', '').replace('`', '')
             full_text = f"🤖 Глобальный ASO-Анализ ({pkg_id}):\n\n{clean_ai}"
             
-            # ЗАЩИТА: Нарезаем длинный ИИ-отчет на куски, чтобы Telegram не отклонил его
             limit = 4000
             for chunk_idx in range(0, len(full_text), limit):
                 chunk = full_text[chunk_idx:chunk_idx+limit]
-                requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
-                              data={"chat_id": c_id, "text": chunk})
+                requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": c_id, "text": chunk})
             time.sleep(3)
 
     for c_id, stats in user_stats.items():
