@@ -115,9 +115,15 @@ def fetch_app_data(pkg_id, locale):
         
         data = res['results'][0]
         
+        # Берем API-скрины
         screens = data.get('screenshotUrls', [])
         if not screens:
             screens = data.get('ipadScreenshotUrls', [])
+
+        # Получаем иконку заранее, чтобы потом исключить ее из скриншотов
+        icon_url = data.get('artworkUrl512', data.get('artworkUrl100', ''))
+        if icon_url: 
+            icon_url = icon_url.replace('.webp', '.jpg')
 
         subtitle = data.get('subtitle', '')
         if not subtitle or not screens:
@@ -129,15 +135,27 @@ def fetch_app_data(pkg_id, locale):
                 }
                 html = requests.get(app_url, headers=headers, timeout=10).text
                 
+                # Парсинг сабтайтла
                 if not subtitle:
                     match = re.search(r'<h2[^>]*class="[^"]*subtitle[^"]*"[^>]*>(.*?)</h2>', html, re.IGNORECASE | re.DOTALL)
                     if match:
                         subtitle = re.sub(r'<[^>]+>', '', match.group(1)).strip()
                 
+                # ХИРУРГИЧЕСКИЙ ПАРСИНГ СКРИНШОТОВ (Отрезаем низ страницы)
                 if not screens:
-                    scr_block = re.search(r'we-screenshot-viewer(.*?)</ul>', html, re.IGNORECASE | re.DOTALL)
-                    target_html = scr_block.group(1) if scr_block else html
+                    target_html = html
+                    # Находим начало карусели со скриншотами
+                    if 'we-screenshot-viewer' in target_html:
+                        target_html = target_html.split('we-screenshot-viewer')[1]
+                        # Отрезаем всё, что идет после этой секции (чтобы убить похожие приложения)
+                        if '</section>' in target_html:
+                            target_html = target_html.split('</section>')[0]
+                    else:
+                        # Запасной вариант: просто отсекаем отзывы и нижние полки
+                        if 'shelf-title' in target_html:
+                            target_html = target_html.split('shelf-title')[0]
                     
+                    # Теперь собираем картинки только из безопасной, отрезанной зоны
                     scr_matches = re.findall(r'<source[^>]*srcset="([^"\s]+)[^"]*"[^>]*type="image/jpeg"', target_html)
                     if not scr_matches:
                         scr_matches = re.findall(r'<source[^>]*srcset="([^"\s]+)[^"]*"[^>]*type="image/webp"', target_html)
@@ -146,24 +164,35 @@ def fetch_app_data(pkg_id, locale):
                     
                     clean_screens = []
                     for s in scr_matches:
+                        s_lower = s.lower()
+                        # ФИЛЬТР 1: Отстреливаем иконки по словам в URL
+                        if 'icon' in s_lower or 'appicon' in s_lower:
+                            continue
+                            
+                        # ФИЛЬТР 2: Математический фильтр пикселей (Apple пишет их в URL)
                         res_match = re.search(r'/(\d+)x(\d+)[a-zA-Z]*\.', s)
                         if res_match:
-                            w, h = res_match.group(1), res_match.group(2)
-                            if w == h: continue
-                            if h == '0' and int(w) < 300: continue
+                            w, h = int(res_match.group(1)), int(res_match.group(2))
+                            if w == h and w != 0: continue  # Квадрат = иконка
+                            if h == 0 and w < 300: continue # Мелкие элементы
                                 
                         s_jpg = s.replace('.webp', '.jpg').replace('w.webp', 'bb.jpg').replace('w.png', 'bb.png')
+                        
+                        # ФИЛЬТР 3: Убеждаемся, что мы не скачали иконку самого приложения
+                        if icon_url and s_jpg.split('/')[-1] == icon_url.split('/')[-1]:
+                            continue
+                            
                         if s_jpg not in clean_screens:
                             clean_screens.append(s_jpg)
                     
-                    if clean_screens: screens = clean_screens
+                    if clean_screens: 
+                        screens = clean_screens
                         
             except Exception as e:
-                print(f"⚠️ Ошибка HTML-парсера для {pkg_id}: {e}")
+                print(f"⚠️ Ошибка HTML-парсера: {e}")
 
+        # Гарантируем, что в базу лягут только JPG, которые любит Telegram
         screens = [s.replace('.webp', '.jpg') for s in screens]
-        icon_url = data.get('artworkUrl512', data.get('artworkUrl100', ''))
-        if icon_url: icon_url = icon_url.replace('.webp', '.jpg')
 
         return {
             'title': data.get('trackName', ''),
