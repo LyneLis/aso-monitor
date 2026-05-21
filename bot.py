@@ -18,8 +18,8 @@ if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY, transport='rest')
 
 ASO_PROMPT = """
-Ты — ведущий ASO-стратег и эксперт по мобильному маркетингу с глубокой экспертизой в анализе данных. Твоя специализация — реверс-инжиниринг стратегий конкурентов.
-Тебе будут предоставлены данные "До" и "После". Проведи анализ изменений и выяви стратегию роста. Ответ до 4000 символов с учётом пробелов.
+Ты — ведущий ASO-стратег и эксперт по mobile-маркетингу с глубокой экспертизой в анализе данных. Твоя специализация — реверс-инжиниринг стратегий конкурентов.
+Тебе будут предоставлены данные "До" и "После". Проведи анализ изменений и выяви стратегию роста.
 Output Format:
 - Summary: краткий вывод.
 - Keywords Migration: что удалено/добавлено.
@@ -38,10 +38,10 @@ def run_gemini(prompt):
         for m in genai.list_models():
             if 'generateContent' in m.supported_generation_methods:
                 available_models.append(m.name.replace('models/', ''))
-    except Exception as e:
-        print(f"⚠️ Не удалось получить список моделей: {e}")
+    except:
+        pass
 
-    priority_list = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro']
+    priority_list = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.5-pro', 'gemini-1.5-pro', 'gemini-pro']
     models_to_try = [m for m in priority_list if m in available_models]
     if not models_to_try:
         models_to_try = available_models[:2] if available_models else priority_list
@@ -146,26 +146,21 @@ def fetch_app_data(pkg_id, locale):
                         res_match = re.search(r'/(\d+)x(\d+)[a-zA-Z]*\.', s)
                         if res_match:
                             w, h = res_match.group(1), res_match.group(2)
-                            if w == h:
-                                continue
-                            if h == '0' and int(w) < 300:
-                                continue
+                            if w == h: continue
+                            if h == '0' and int(w) < 300: continue
                                 
                         s_jpg = s.replace('.webp', '.jpg').replace('w.webp', 'bb.jpg').replace('w.png', 'bb.png')
                         if s_jpg not in clean_screens:
                             clean_screens.append(s_jpg)
                     
-                    if clean_screens:
-                        screens = clean_screens
+                    if clean_screens: screens = clean_screens
                         
             except Exception as e:
                 print(f"⚠️ Ошибка HTML-парсера для {pkg_id}: {e}")
 
         screens = [s.replace('.webp', '.jpg') for s in screens]
-
         icon_url = data.get('artworkUrl512', data.get('artworkUrl100', ''))
-        if icon_url:
-            icon_url = icon_url.replace('.webp', '.jpg')
+        if icon_url: icon_url = icon_url.replace('.webp', '.jpg')
 
         return {
             'title': data.get('trackName', ''),
@@ -273,7 +268,6 @@ def check_apps():
                                 })
                     
                     if any(k in ["Название", "SD", "Subtitle", "FD", "Описание"] for k in changes):
-                        # ИСПРАВЛЕННЫЙ ФОРМАТ ОТЧЕТА ДЛЯ БОТА С ДОБАВЛЕНИЕМ FD
                         report = (
                             f"ОТЧЕТ ОБ ИЗМЕНЕНИЯХ\nПриложение: {p_id}\nЛокаль: {full_geo.upper()}\nДата: {get_minsk_time()}\n"
                             f"{'='*40}\n\n"
@@ -327,13 +321,20 @@ def check_apps():
         except Exception as e:
             print(f"    ❌ Ошибка {p_id}: {e}")
 
+    # ПОСЛЕ ПРОВЕРКИ ВСЕЙ ТАБЛИЦЫ - ЗАПУСКАЕМ ИИ ДЛЯ КАЖДОГО ПРИЛОЖЕНИЯ РАЗОМ
     for (pkg_id, c_id), loc_data in batched_ai_payloads.items():
         if loc_data:
             print(f"🧠 Запуск пакетного ИИ для {pkg_id} ({len(loc_data)} локалей)")
             ai_msg = analyze_batched_changes_with_ai(loc_data)
             clean_ai = ai_msg.replace('*', '').replace('_', '').replace('#', '').replace('`', '')
-            requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
-                          data={"chat_id": c_id, "text": f"🤖 Глобальный ASO-Анализ ({pkg_id}):\n\n{clean_ai}"})
+            full_text = f"🤖 Глобальный ASO-Анализ ({pkg_id}):\n\n{clean_ai}"
+            
+            # ЗАЩИТА: Нарезаем длинный ИИ-отчет на куски, чтобы Telegram не отклонил его
+            limit = 4000
+            for chunk_idx in range(0, len(full_text), limit):
+                chunk = full_text[chunk_idx:chunk_idx+limit]
+                requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
+                              data={"chat_id": c_id, "text": chunk})
             time.sleep(3)
 
     for c_id, stats in user_stats.items():

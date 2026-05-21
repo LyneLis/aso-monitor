@@ -7,6 +7,7 @@ from google_play_scraper import app as gp_app
 from datetime import datetime, timedelta
 from streamlit_gsheets import GSheetsConnection
 import re
+import time
 
 st.set_page_config(page_title="ASO Monitor PRO", layout="wide")
 
@@ -16,8 +17,8 @@ if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY, transport='rest')
 
 ASO_PROMPT = """
-Ты — ведущий ASO-стратег и эксперт по мобильному маркетингу с глубокой экспертизой в анализе данных. Твоя специализация — реверс-инжиниринг стратегий конкурентов.
-Тебе будут предоставлены данные "До" и "После". Проведи анализ изменений и выяви стратегию роста. Ответ до 4000 символов с учётом пробелов.
+Ты — ведущий ASO-стратег и эксперт по mobile-маркетингу с глубокой экспертизой в анализе данных. Твоя специализация — реверс-инжиниринг стратегий конкурентов.
+Тебе будут предоставлены данные "До" и "После". Проведи анализ изменений и выяви стратегию роста.
 Output Format:
 - Summary: краткий вывод.
 - Keywords Migration: что удалено/добавлено.
@@ -35,33 +36,7 @@ def analyze_changes_with_ai(old_t, new_t, old_s, new_s, old_d, new_d):
         f"--- БЫЛО ---\nTitle: {old_t}\nShort Description: {old_s}\nFull Description: {old_d}\n\n"
         f"--- СТАЛО ---\nTitle: {new_t}\nShort Description: {new_s}\nFull Description: {new_d}"
     )
-
-    available_models = []
-    try:
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                available_models.append(m.name.replace('models/', ''))
-    except Exception as e:
-        print(f"⚠️ Не удалось получить список моделей: {e}")
-
-    priority_list = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro']
-    
-    models_to_try = [m for m in priority_list if m in available_models]
-    if not models_to_try:
-        models_to_try = available_models[:2] if available_models else priority_list
-
-    last_error = ""
-    for model_name in models_to_try:
-        try:
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content(full_prompt)
-            if response and response.text:
-                return response.text
-        except Exception as e:
-            last_error = str(e)
-            continue 
-            
-    return f"❌ Ошибка ИИ-анализа: {last_error}"
+    return run_gemini(full_prompt)
 
 def analyze_batched_changes_with_ai(batched_data):
     if not GEMINI_API_KEY: return "❌ Ключ Gemini API не найден."
@@ -73,15 +48,19 @@ def analyze_batched_changes_with_ai(batched_data):
         prompt += f"БЫЛО:\nTitle: {data['old_t']}\nShort/Subtitle: {data['old_s']}\nFull Desc: {data['old_d']}\n"
         prompt += f"СТАЛО:\nTitle: {data['new_t']}\nShort/Subtitle: {data['new_s']}\nFull Desc: {data['new_d']}\n"
 
+    return run_gemini(prompt)
+
+def run_gemini(prompt):
     available_models = []
     try:
         for m in genai.list_models():
             if 'generateContent' in m.supported_generation_methods:
                 available_models.append(m.name.replace('models/', ''))
-    except Exception as e:
+    except:
         pass
 
-    priority_list = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro']
+    # В первую очередь пробуем Flash модели с огромными лимитами бесплатных запросов
+    priority_list = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.5-pro', 'gemini-1.5-pro', 'gemini-pro']
     models_to_try = [m for m in priority_list if m in available_models]
     if not models_to_try:
         models_to_try = available_models[:2] if available_models else priority_list
@@ -96,6 +75,7 @@ def analyze_batched_changes_with_ai(batched_data):
         except Exception as e:
             last_error = str(e)
             continue 
+            
     return f"❌ Ошибка ИИ-анализа: {last_error}"
 
 GP_LOCALES_RAW = {
@@ -231,14 +211,18 @@ def send_telegram_msg(text, chat_id, use_markdown=False):
     token = st.secrets.get("TELEGRAM_TOKEN")
     if token and chat_id:
         url = f"https://api.telegram.org/bot{token}/sendMessage"
-        data = {"chat_id": chat_id, "text": text}
-        if use_markdown:
-            data["parse_mode"] = "Markdown"
-        try: 
-            res = requests.post(url, data=data)
-            if use_markdown and res.status_code != 200:
-                requests.post(url, data={"chat_id": chat_id, "text": text})
-        except: pass
+        # ЗАЩИТА: Нарезка сообщений по 4000 символов, чтобы не блокировал Telegram
+        limit = 4000
+        for i in range(0, len(text), limit):
+            chunk = text[i:i+limit]
+            data = {"chat_id": chat_id, "text": chunk}
+            if use_markdown:
+                data["parse_mode"] = "Markdown"
+            try: 
+                res = requests.post(url, data=data)
+                if use_markdown and res.status_code != 200:
+                    requests.post(url, data={"chat_id": chat_id, "text": chunk})
+            except: pass
 
 def send_telegram_file(file_content, filename, caption, chat_id):
     token = st.secrets.get("TELEGRAM_TOKEN")
@@ -356,7 +340,6 @@ def run_check_for_item(key, info, user_reports_dict, single_mode=False, skip_ai=
                     'old_d': old_d, 'new_d': new_m['description']
                 }
                 
-                # ИСПРАВЛЕННЫЙ ФОРМАТ ОТЧЕТА С ДОБАВЛЕНИЕМ FD
                 report_content = (
                     f"ОТЧЕТ ОБ ИЗМЕНЕНИЯХ\nПриложение: {info['package_id']}\nЛокаль: {info['geo'].upper()}\nДата: {get_minsk_time()}\n"
                     f"{'='*40}\n\n"
@@ -498,7 +481,7 @@ with st.sidebar:
                 st.success(f"Успешно добавлено локалей: {success_added}")
                 st.rerun()
         else:
-            st.warning("Заполните ID, выберите локали и пользователя!")
+            st.warning("Заполните ID, выберите локали and пользователя!")
 
 android_apps = {}
 ios_apps = {}
@@ -532,31 +515,51 @@ def render_app_groups(app_groups, os_icon):
                 if main_icon and main_icon != 'nan': st.image(main_icon, width=80)
                 
             with col_btn:
-                if st.button(f"🔍 Проверить все локали ({len(keys)} шт.)", key=f"ch_grp_{pkg_id}_{chat_id}"):
-                    with st.spinner("Сверка всей группы со стором..."):
-                        user_reports = {}
-                        upd = 0
-                        batched_ai = {}
-                        
-                        for k in keys:
-                            u, _, txt_payload = run_check_for_item(k, db[k], user_reports, single_mode=False, skip_ai=True)
-                            upd += u
-                            if txt_payload:
-                                batched_ai[db[k]['geo']] = txt_payload
-                                
-                        if batched_ai:
-                            ai_msg = analyze_batched_changes_with_ai(batched_ai)
-                            clean_ai = ai_msg.replace('*', '').replace('_', '').replace('#', '').replace('`', '')
-                            send_telegram_msg(f"🤖 Пакетный ИИ-анализ ({pkg_id}):\n\n{clean_ai}", chat_id)
-                        
-                        if upd > 0:
-                            for c_id, rep_text in user_reports.items():
-                                send_telegram_file(rep_text, f"group_report_{pkg_id}.txt", f"📊 Проверка {pkg_id}: найдено {upd} изм.", c_id)
-                            st.success(f"Обновлено локалей: {upd}. Отчеты отправлены.")
-                        else:
-                            st.info("Группа проверена. Без изменений.")
-                        save_data(db)
-                        st.rerun()
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button(f"🔍 Проверить все локали ({len(keys)} шт.)", key=f"ch_grp_{pkg_id}_{chat_id}"):
+                        with st.spinner("Сверка всей группы со стором..."):
+                            user_reports = {}
+                            upd = 0
+                            batched_ai = {}
+                            
+                            for k in keys:
+                                u, _, txt_payload = run_check_for_item(k, db[k], user_reports, single_mode=False, skip_ai=True)
+                                upd += u
+                                if txt_payload:
+                                    batched_ai[db[k]['geo']] = txt_payload
+                                    
+                            if batched_ai:
+                                ai_msg = analyze_batched_changes_with_ai(batched_ai)
+                                clean_ai = ai_msg.replace('*', '').replace('_', '').replace('#', '').replace('`', '')
+                                send_telegram_msg(f"🤖 Пакетный ИИ-анализ ({pkg_id}):\n\n{clean_ai}", chat_id)
+                            
+                            if upd > 0:
+                                for c_id, rep_text in user_reports.items():
+                                    send_telegram_file(rep_text, f"group_report_{pkg_id}.txt", f"📊 Проверка {pkg_id}: найдено {upd} изм.", c_id)
+                                st.success(f"Обновлено локалей: {upd}. Отчеты отправлены.")
+                            else:
+                                st.info("Группа проверена. Без изменений.")
+                            save_data(db)
+                            st.rerun()
+                
+                with col2:
+                    # НОВАЯ КНОПКА: Принудительный анализ текущего состояния ASO (спасает, если отчет пропал)
+                    if st.button(f"🧠 Глобальный ИИ-анализ текущего ASO", key=f"ai_force_{pkg_id}_{chat_id}"):
+                        with st.spinner("ИИ генерирует обзор по текущим текстам таблицы..."):
+                            batched_current = {}
+                            for k in keys:
+                                inf = db[k]
+                                batched_current[inf['geo']] = {
+                                    'old_t': inf['current']['title'], 'new_t': inf['current']['title'],
+                                    'old_s': inf['current']['summary'], 'new_s': inf['current']['summary'],
+                                    'old_d': inf['current']['description'], 'new_d': inf['current']['description']
+                                }
+                            if batched_current:
+                                ai_msg = analyze_batched_changes_with_ai(batched_current)
+                                clean_ai = ai_msg.replace('*', '').replace('_', '').replace('#', '').replace('`', '')
+                                send_telegram_msg(f"🧠 Текущий обзор ASO-стратегии конкурента ({pkg_id}):\n\n{clean_ai}", chat_id)
+                                st.success("ASO-анализ успешно отправлен тебе в Telegram!")
 
             st.markdown("---")
             
