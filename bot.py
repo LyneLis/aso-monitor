@@ -31,15 +31,8 @@ Output Format:
 def get_minsk_time():
     return (datetime.utcnow() + timedelta(hours=3)).strftime("%d.%m.%Y %H:%M:%S")
 
-def analyze_changes_with_ai(old_t, new_t, old_s, new_s, old_d, new_d):
+def run_gemini(prompt):
     if not GEMINI_API_KEY: return "❌ Ключ Gemini API не найден."
-    
-    full_prompt = (
-        f"{ASO_PROMPT}\n\n"
-        f"--- БЫЛО ---\nTitle: {old_t}\nShort/Subtitle: {old_s}\nFull Description: {old_d}\n\n"
-        f"--- СТАЛО ---\nTitle: {new_t}\nShort/Subtitle: {new_s}\nFull Description: {new_d}"
-    )
-
     available_models = []
     try:
         for m in genai.list_models():
@@ -49,7 +42,6 @@ def analyze_changes_with_ai(old_t, new_t, old_s, new_s, old_d, new_d):
         print(f"⚠️ Не удалось получить список моделей: {e}")
 
     priority_list = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro']
-
     models_to_try = [m for m in priority_list if m in available_models]
     if not models_to_try:
         models_to_try = available_models[:2] if available_models else priority_list
@@ -59,14 +51,21 @@ def analyze_changes_with_ai(old_t, new_t, old_s, new_s, old_d, new_d):
         try:
             print(f"🤖 Пробую модель: {model_name}...")
             model = genai.GenerativeModel(model_name)
-            response = model.generate_content(full_prompt)
+            response = model.generate_content(prompt)
             if response and response.text:
                 return response.text
         except Exception as e:
             last_error = str(e)
             continue
-            
     return f"❌ Ошибка ИИ-анализа: {last_error}"
+
+def analyze_batched_changes_with_ai(batched_data):
+    prompt = ASO_PROMPT + "\n\nВНИМАНИЕ: Конкурент обновил сразу несколько локалей. Проанализируй общую ASO-стратегию этих изменений (какие рынки в фокусе, какие ключевики тестируют):\n"
+    for loc, data in batched_data.items():
+        prompt += f"\n🌍 --- ЛОКАЛЬ: {loc.upper()} ---\n"
+        prompt += f"БЫЛО:\nTitle: {data['old_t']}\nShort/Subtitle: {data['old_s']}\nFull Desc: {data['old_d']}\n"
+        prompt += f"СТАЛО:\nTitle: {data['new_t']}\nShort/Subtitle: {data['new_s']}\nFull Desc: {data['new_d']}\n"
+    return run_gemini(prompt)
 
 def clean_val(val):
     s_val = str(val).strip()
@@ -133,7 +132,6 @@ def fetch_app_data(pkg_id, locale):
                         subtitle = re.sub(r'<[^>]+>', '', match.group(1)).strip()
                 
                 if not screens:
-                    # Ищем блок карусели
                     scr_block = re.search(r'we-screenshot-viewer(.*?)</ul>', html, re.IGNORECASE | re.DOTALL)
                     target_html = scr_block.group(1) if scr_block else html
                     
@@ -181,7 +179,7 @@ def fetch_app_data(pkg_id, locale):
         return gp_app(pkg_id, lang=l_code, country=c_code)
 
 def check_apps():
-    print(f"--- СТАРТ ПРОВЕРКИ v3.19 ({get_minsk_time()}) ---")
+    print(f"--- СТАРТ ПРОВЕРКИ v3.21 ({get_minsk_time()}) ---")
     try:
         gc = gspread.service_account_from_dict(service_account_info)
         sh = gc.open_by_url(SPREADSHEET_URL)
@@ -193,6 +191,7 @@ def check_apps():
         print(f"❌ Ошибка API Таблиц: {e}"); return
 
     user_stats = {}
+    batched_ai_payloads = {} 
 
     for i, row_values in enumerate(all_rows[1:], start=2):
         row = {headers[j]: (row_values[j] if j < len(row_values) else "") for j in range(len(headers))}
@@ -274,21 +273,32 @@ def check_apps():
                                 })
                     
                     if any(k in ["Название", "SD", "Subtitle", "FD", "Описание"] for k in changes):
+                        # ИСПРАВЛЕННЫЙ ФОРМАТ ОТЧЕТА ДЛЯ БОТА С ДОБАВЛЕНИЕМ FD
                         report = (
-                            f"ОТЧЕТ: {p_id}\n\n"
-                            f"--- БЫЛО ---\n{old_t}\n{old_s}\n\n"
-                            f"--- СТАЛО ---\n{new_t}\n{new_s}"
+                            f"ОТЧЕТ ОБ ИЗМЕНЕНИЯХ\nПриложение: {p_id}\nЛокаль: {full_geo.upper()}\nДата: {get_minsk_time()}\n"
+                            f"{'='*40}\n\n"
+                            f"--- БЫЛО ---\n"
+                            f"Название: {old_t}\n"
+                            f"SD / Subtitle: {old_s}\n\n"
+                            f"FD / Описание:\n{old_d}\n\n"
+                            f"{'-'*40}\n\n"
+                            f"--- СТАЛО ---\n"
+                            f"Название: {new_t}\n"
+                            f"SD / Subtitle: {new_s}\n\n"
+                            f"FD / Описание:\n{new_d}\n"
                         )
                         requests.post(f"https://api.telegram.org/bot{TOKEN}/sendDocument", 
                                      data={"chat_id": c_id, "caption": f"📄 Отчет: {p_id}"}, 
                                      files={"document": (f"report_{p_id}.txt", report.encode('utf-8'))})
 
-                        raw_ai_analysis = analyze_changes_with_ai(old_t, new_t, old_s, new_s, old_d, new_d)
-                        clean_ai_analysis = raw_ai_analysis.replace('*', '').replace('_', '').replace('#', '').replace('`', '')
-                        ai_msg = f"🤖 Анализ ИИ:\n\n{clean_ai_analysis}"
-                        
-                        requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
-                                      data={"chat_id": c_id, "text": ai_msg})
+                        b_key = (p_id, c_id)
+                        if b_key not in batched_ai_payloads:
+                            batched_ai_payloads[b_key] = {}
+                        batched_ai_payloads[b_key][full_geo] = {
+                            'old_t': old_t, 'new_t': new_t,
+                            'old_s': old_s, 'new_s': new_s,
+                            'old_d': old_d, 'new_d': new_d
+                        }
 
                 row['title'], row['summary'], row['description'] = new_t, new_s, new_d
                 row['icon'], row['header_image'] = new_icon, new_header
@@ -316,6 +326,15 @@ def check_apps():
 
         except Exception as e:
             print(f"    ❌ Ошибка {p_id}: {e}")
+
+    for (pkg_id, c_id), loc_data in batched_ai_payloads.items():
+        if loc_data:
+            print(f"🧠 Запуск пакетного ИИ для {pkg_id} ({len(loc_data)} локалей)")
+            ai_msg = analyze_batched_changes_with_ai(loc_data)
+            clean_ai = ai_msg.replace('*', '').replace('_', '').replace('#', '').replace('`', '')
+            requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
+                          data={"chat_id": c_id, "text": f"🤖 Глобальный ASO-Анализ ({pkg_id}):\n\n{clean_ai}"})
+            time.sleep(3)
 
     for c_id, stats in user_stats.items():
         if stats['updated'] > 0:

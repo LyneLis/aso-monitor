@@ -63,6 +63,41 @@ def analyze_changes_with_ai(old_t, new_t, old_s, new_s, old_d, new_d):
             
     return f"❌ Ошибка ИИ-анализа: {last_error}"
 
+def analyze_batched_changes_with_ai(batched_data):
+    if not GEMINI_API_KEY: return "❌ Ключ Gemini API не найден."
+    
+    prompt = ASO_PROMPT + "\n\nВНИМАНИЕ: Конкурент обновил сразу несколько локалей. Проанализируй общую ASO-стратегию этих изменений (какие рынки в фокусе, какие ключевики тестируют):\n"
+    
+    for loc, data in batched_data.items():
+        prompt += f"\n🌍 --- ЛОКАЛЬ: {loc.upper()} ---\n"
+        prompt += f"БЫЛО:\nTitle: {data['old_t']}\nShort/Subtitle: {data['old_s']}\nFull Desc: {data['old_d']}\n"
+        prompt += f"СТАЛО:\nTitle: {data['new_t']}\nShort/Subtitle: {data['new_s']}\nFull Desc: {data['new_d']}\n"
+
+    available_models = []
+    try:
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                available_models.append(m.name.replace('models/', ''))
+    except Exception as e:
+        pass
+
+    priority_list = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro']
+    models_to_try = [m for m in priority_list if m in available_models]
+    if not models_to_try:
+        models_to_try = available_models[:2] if available_models else priority_list
+
+    last_error = ""
+    for model_name in models_to_try:
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(prompt)
+            if response and response.text:
+                return response.text
+        except Exception as e:
+            last_error = str(e)
+            continue 
+    return f"❌ Ошибка ИИ-анализа: {last_error}"
+
 GP_LOCALES_RAW = {
     "af": "Afrikaans", "am": "Amharic", "ar": "Arabic", "az-AZ": "Azerbaijani (Azerbaijan)",
     "be": "Belarusian", "bg": "Bulgarian", "bn-BD": "Bengali (Bangladesh)", "ca": "Catalan",
@@ -131,12 +166,10 @@ def fetch_app_data(pkg_id, locale):
         
         data = res['results'][0]
         
-        # Берем API-скрины
         screens = data.get('screenshotUrls', [])
         if not screens:
             screens = data.get('ipadScreenshotUrls', [])
 
-        # Если чего-то не хватает — СНАЙПЕРСКИЙ ВЕБ-ПАРСИНГ
         subtitle = data.get('subtitle', '')
         if not subtitle or not screens:
             try:
@@ -147,15 +180,12 @@ def fetch_app_data(pkg_id, locale):
                 }
                 html = requests.get(app_url, headers=headers, timeout=10).text
                 
-                # Парсинг сабтайтла
                 if not subtitle:
                     match = re.search(r'<h2[^>]*class="[^"]*subtitle[^"]*"[^>]*>(.*?)</h2>', html, re.IGNORECASE | re.DOTALL)
                     if match:
                         subtitle = re.sub(r'<[^>]+>', '', match.group(1)).strip()
                 
-                # Парсинг скринов (Строго в контейнере скриншотов + фильтр квадратов)
                 if not screens:
-                    # Ищем блок карусели
                     scr_block = re.search(r'we-screenshot-viewer(.*?)</ul>', html, re.IGNORECASE | re.DOTALL)
                     target_html = scr_block.group(1) if scr_block else html
                     
@@ -167,31 +197,24 @@ def fetch_app_data(pkg_id, locale):
                     
                     clean_screens = []
                     for s in scr_matches:
-                        # Защита 2: Математический фильтр разрешений
                         res_match = re.search(r'/(\d+)x(\d+)[a-zA-Z]*\.', s)
                         if res_match:
                             w, h = res_match.group(1), res_match.group(2)
-                            if w == h: # Это квадрат = иконка
-                                continue
-                            if h == '0' and int(w) < 300: # Мелкие левые иконки
-                                continue
+                            if w == h: continue
+                            if h == '0' and int(w) < 300: continue
                                 
                         s_jpg = s.replace('.webp', '.jpg').replace('w.webp', 'bb.jpg').replace('w.png', 'bb.png')
                         if s_jpg not in clean_screens:
                             clean_screens.append(s_jpg)
                     
-                    if clean_screens:
-                        screens = clean_screens
+                    if clean_screens: screens = clean_screens
                         
             except Exception as e:
-                print(f"⚠️ Ошибка HTML-парсера для {pkg_id}: {e}")
+                print(f"⚠️ Ошибка HTML-парсера: {e}")
 
-        # Убеждаемся, что все скрины в JPG для Telegram
         screens = [s.replace('.webp', '.jpg') for s in screens]
-
         icon_url = data.get('artworkUrl512', data.get('artworkUrl100', ''))
-        if icon_url:
-            icon_url = icon_url.replace('.webp', '.jpg')
+        if icon_url: icon_url = icon_url.replace('.webp', '.jpg')
 
         return {
             'title': data.get('trackName', ''),
@@ -278,15 +301,15 @@ def save_data(data):
 
 def clean_val(val):
     s_val = str(val).strip()
-    if s_val.lower() in ['nan', 'none', '#n/a', '']:
-        return ""
-    if '#error' in s_val.lower():
-        return None
+    if s_val.lower() in ['nan', 'none', '#n/a', '']: return ""
+    if '#error' in s_val.lower(): return None
     return s_val
 
-def run_check_for_item(key, info, user_reports_dict, single_mode=False):
+def run_check_for_item(key, info, user_reports_dict, single_mode=False, skip_ai=False):
     updates = 0
     changed = []
+    text_changes_payload = None
+    
     try:
         new_m = fetch_app_data(info['package_id'], info['geo'])
         log_entry = {"time": get_minsk_time(), "status": "🟢 Ок"}
@@ -316,39 +339,49 @@ def run_check_for_item(key, info, user_reports_dict, single_mode=False):
             updates = 1
             c_id = info['chat_id']
 
-            is_rollback = False
-            for past in info['history']:
-                if new_m['title'] == past.get('title') and new_m['summary'] == past.get('summary') and new_m['description'] == past.get('description'):
-                    is_rollback = True
-                    break
+            is_rollback = any(new_m['title'] == p.get('title') and new_m['summary'] == p.get('summary') and new_m['description'] == p.get('description') for p in info['history'])
 
             os_icon = "🍎" if str(info['package_id']).isdigit() else "🤖"
             msg_prefix = "🔄 ОТКАТ (A/B ТЕСТ)" if is_rollback else "⚠️ ИЗМЕНЕНИЕ"
             alert_msg = f"{msg_prefix} {os_icon} [{info['geo'].upper()}]\n📦 {new_m['title']}\nИзменено: {', '.join(changed)}"
 
             if is_rollback: alert_msg += "\n\n⚠️ Тексты вернулись к одной из прошлых версий."
-            
             send_telegram_msg(alert_msg, c_id)
 
             text_changed = any(k in changed for k in ["Title", "SD", "FD"])
             if text_changed:
+                text_changes_payload = {
+                    'old_t': old_t, 'new_t': new_m['title'],
+                    'old_s': old_s, 'new_s': new_m['summary'],
+                    'old_d': old_d, 'new_d': new_m['description']
+                }
+                
+                # ИСПРАВЛЕННЫЙ ФОРМАТ ОТЧЕТА С ДОБАВЛЕНИЕМ FD
                 report_content = (
-                    f"ОТЧЕТ ОБ ИЗМЕНЕНИЯХ (Ручная проверка)\nДата: {get_minsk_time()}\nПриложение: {info['package_id']}\nЛокаль: {info['geo']}\n"
-                    f"{'='*30}\n\n--- СТАРОЕ НАЗВАНИЕ ---\n{old_t}\n\n--- НОВОЕ НАЗВАНИЕ ---\n{new_m['title']}\n\n"
-                    f"{'-'*30}\n--- СТАРЫЙ SD ---\n{old_s}\n\n--- НОВЫЙ SD ---\n{new_m['summary']}\n\n"
-                    f"{'-'*30}\n--- СТАРЫЙ FD ---\n{old_d}\n\n--- НОВЫЙ FD ---\n{new_m['description']}\n"
+                    f"ОТЧЕТ ОБ ИЗМЕНЕНИЯХ\nПриложение: {info['package_id']}\nЛокаль: {info['geo'].upper()}\nДата: {get_minsk_time()}\n"
+                    f"{'='*40}\n\n"
+                    f"--- БЫЛО ---\n"
+                    f"Название: {old_t}\n"
+                    f"SD / Subtitle: {old_s}\n\n"
+                    f"FD / Описание:\n{old_d}\n\n"
+                    f"{'-'*40}\n\n"
+                    f"--- СТАЛО ---\n"
+                    f"Название: {new_m['title']}\n"
+                    f"SD / Subtitle: {new_m['summary']}\n\n"
+                    f"FD / Описание:\n{new_m['description']}\n"
                 )
                 
                 if single_mode:
                     send_telegram_file(report_content, f"report_{info['package_id']}.txt", f"📄 Детальный отчет: {info['package_id']}", c_id)
                 else:
                     user_reports_dict.setdefault(c_id, "--- ASO MANUAL REPORT (FROM SITE) ---\n\n")
-                    user_reports_dict[c_id] += report_content
+                    user_reports_dict[c_id] += report_content + "\n\n"
 
-                raw_ai_analysis = analyze_changes_with_ai(old_t, new_m['title'], old_s, new_m['summary'], old_d, new_m['description'])
-                clean_ai_analysis = raw_ai_analysis.replace('*', '').replace('_', '').replace('#', '').replace('`', '')
-                ai_msg = f"🤖 Анализ ИИ (Сайт):\n\n{clean_ai_analysis}"
-                send_telegram_msg(ai_msg, c_id)
+                if not skip_ai:
+                    raw_ai_analysis = analyze_changes_with_ai(old_t, new_m['title'], old_s, new_m['summary'], old_d, new_m['description'])
+                    clean_ai_analysis = raw_ai_analysis.replace('*', '').replace('_', '').replace('#', '').replace('`', '')
+                    ai_msg = f"🤖 Анализ ИИ (Сайт):\n\n{clean_ai_analysis}"
+                    send_telegram_msg(ai_msg, c_id)
 
             info['history'].append(info['current'])
             info['current'] = {
@@ -379,7 +412,8 @@ def run_check_for_item(key, info, user_reports_dict, single_mode=False):
         info.setdefault('check_log', []).append(log_entry)
         info['check_log'] = info['check_log'][-5:]
 
-    return updates, changed
+    return updates, changed, text_changes_payload
+
 
 # --- ИНТЕРФЕЙС ---
 st.title("🚀 ASO Monitor PRO")
@@ -387,13 +421,25 @@ st.caption("Поддерживает Google Play (ID: com.app.name) и App Store
 db = load_data()
 
 if st.button("🔍 Проверить вообще всё", type="primary"):
-    with st.spinner("Тотальная проверка стора и анализ ИИ..."):
+    with st.spinner("Тотальная проверка стора и пакетный анализ ИИ..."):
         updates_count = 0
         user_reports = {} 
+        batched_ai = {}
         
         for key, info in db.items():
-            u, _ = run_check_for_item(key, info, user_reports, single_mode=False)
+            u, _, txt_payload = run_check_for_item(key, info, user_reports, single_mode=False, skip_ai=True)
             updates_count += u
+            if txt_payload:
+                b_key = (info['package_id'], info['chat_id'])
+                if b_key not in batched_ai: batched_ai[b_key] = {}
+                batched_ai[b_key][info['geo']] = txt_payload
+        
+        for (pkg_id, c_id), loc_data in batched_ai.items():
+            if loc_data:
+                ai_msg = analyze_batched_changes_with_ai(loc_data)
+                clean_ai = ai_msg.replace('*', '').replace('_', '').replace('#', '').replace('`', '')
+                send_telegram_msg(f"🤖 Глобальный ASO-Анализ ({pkg_id}):\n\n{clean_ai}", c_id)
+                time.sleep(3) 
         
         if updates_count > 0:
             for c_id, rep_text in user_reports.items():
@@ -490,9 +536,19 @@ def render_app_groups(app_groups, os_icon):
                     with st.spinner("Сверка всей группы со стором..."):
                         user_reports = {}
                         upd = 0
+                        batched_ai = {}
+                        
                         for k in keys:
-                            u, _ = run_check_for_item(k, db[k], user_reports, single_mode=False)
+                            u, _, txt_payload = run_check_for_item(k, db[k], user_reports, single_mode=False, skip_ai=True)
                             upd += u
+                            if txt_payload:
+                                batched_ai[db[k]['geo']] = txt_payload
+                                
+                        if batched_ai:
+                            ai_msg = analyze_batched_changes_with_ai(batched_ai)
+                            clean_ai = ai_msg.replace('*', '').replace('_', '').replace('#', '').replace('`', '')
+                            send_telegram_msg(f"🤖 Пакетный ИИ-анализ ({pkg_id}):\n\n{clean_ai}", chat_id)
+                        
                         if upd > 0:
                             for c_id, rep_text in user_reports.items():
                                 send_telegram_file(rep_text, f"group_report_{pkg_id}.txt", f"📊 Проверка {pkg_id}: найдено {upd} изм.", c_id)
@@ -530,8 +586,8 @@ def render_app_groups(app_groups, os_icon):
                         if st.button("Проверить локаль", key=f"ch_sng_{k}"):
                             with st.spinner("Проверка одной локали..."):
                                 user_reports = {} 
-                                u, c = run_check_for_item(k, info, user_reports, single_mode=True)
-                                if u > 0: st.success(f"Обновлено: {', '.join(c)}. Отчет отправлен.")
+                                u, _, _ = run_check_for_item(k, info, user_reports, single_mode=True, skip_ai=False)
+                                if u > 0: st.success(f"Обновлено. Отчет отправлен.")
                                 else: st.info("Без изменений.")
                                 save_data(db)
                                 st.rerun()
