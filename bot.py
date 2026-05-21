@@ -41,8 +41,8 @@ def run_gemini(prompt):
         for m in genai.list_models():
             if 'generateContent' in m.supported_generation_methods:
                 available_models.append(m.name.replace('models/', ''))
-    except:
-        pass
+    except Exception as e:
+        print(f"⚠️ Не удалось получить список моделей: {e}")
 
     priority_list = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.5-pro', 'gemini-1.5-pro', 'gemini-pro']
     models_to_try = [m for m in priority_list if m in available_models]
@@ -115,12 +115,10 @@ def fetch_app_data(pkg_id, locale):
         
         data = res['results'][0]
         
-        # Берем API-скрины
         screens = data.get('screenshotUrls', [])
         if not screens:
             screens = data.get('ipadScreenshotUrls', [])
 
-        # Получаем иконку заранее, чтобы потом исключить ее из скриншотов
         icon_url = data.get('artworkUrl512', data.get('artworkUrl100', ''))
         if icon_url: 
             icon_url = icon_url.replace('.webp', '.jpg')
@@ -135,27 +133,21 @@ def fetch_app_data(pkg_id, locale):
                 }
                 html = requests.get(app_url, headers=headers, timeout=10).text
                 
-                # Парсинг сабтайтла
                 if not subtitle:
                     match = re.search(r'<h2[^>]*class="[^"]*subtitle[^"]*"[^>]*>(.*?)</h2>', html, re.IGNORECASE | re.DOTALL)
                     if match:
                         subtitle = re.sub(r'<[^>]+>', '', match.group(1)).strip()
                 
-                # ХИРУРГИЧЕСКИЙ ПАРСИНГ СКРИНШОТОВ (Отрезаем низ страницы)
                 if not screens:
                     target_html = html
-                    # Находим начало карусели со скриншотами
                     if 'we-screenshot-viewer' in target_html:
                         target_html = target_html.split('we-screenshot-viewer')[1]
-                        # Отрезаем всё, что идет после этой секции (чтобы убить похожие приложения)
                         if '</section>' in target_html:
                             target_html = target_html.split('</section>')[0]
                     else:
-                        # Запасной вариант: просто отсекаем отзывы и нижние полки
                         if 'shelf-title' in target_html:
                             target_html = target_html.split('shelf-title')[0]
                     
-                    # Теперь собираем картинки только из безопасной, отрезанной зоны
                     scr_matches = re.findall(r'<source[^>]*srcset="([^"\s]+)[^"]*"[^>]*type="image/jpeg"', target_html)
                     if not scr_matches:
                         scr_matches = re.findall(r'<source[^>]*srcset="([^"\s]+)[^"]*"[^>]*type="image/webp"', target_html)
@@ -165,20 +157,17 @@ def fetch_app_data(pkg_id, locale):
                     clean_screens = []
                     for s in scr_matches:
                         s_lower = s.lower()
-                        # ФИЛЬТР 1: Отстреливаем иконки по словам в URL
                         if 'icon' in s_lower or 'appicon' in s_lower:
                             continue
                             
-                        # ФИЛЬТР 2: Математический фильтр пикселей (Apple пишет их в URL)
                         res_match = re.search(r'/(\d+)x(\d+)[a-zA-Z]*\.', s)
                         if res_match:
                             w, h = int(res_match.group(1)), int(res_match.group(2))
-                            if w == h and w != 0: continue  # Квадрат = иконка
-                            if h == 0 and w < 300: continue # Мелкие элементы
+                            if w == h and w != 0: continue
+                            if h == 0 and w < 300: continue
                                 
                         s_jpg = s.replace('.webp', '.jpg').replace('w.webp', 'bb.jpg').replace('w.png', 'bb.png')
                         
-                        # ФИЛЬТР 3: Убеждаемся, что мы не скачали иконку самого приложения
                         if icon_url and s_jpg.split('/')[-1] == icon_url.split('/')[-1]:
                             continue
                             
@@ -191,7 +180,6 @@ def fetch_app_data(pkg_id, locale):
             except Exception as e:
                 print(f"⚠️ Ошибка HTML-парсера: {e}")
 
-        # Гарантируем, что в базу лягут только JPG, которые любит Telegram
         screens = [s.replace('.webp', '.jpg') for s in screens]
 
         return {
@@ -206,7 +194,7 @@ def fetch_app_data(pkg_id, locale):
         return gp_app(pkg_id, lang=l_code, country=c_code)
 
 def check_apps():
-    print(f"--- СТАРТ ПРОВЕРКИ v3.22 (Анти-спам) ({get_minsk_time()}) ---")
+    print(f"--- СТАРТ ПРОВЕРКИ v3.23 (Интервал 12ч) ({get_minsk_time()}) ---")
     try:
         gc = gspread.service_account_from_dict(service_account_info)
         sh = gc.open_by_url(SPREADSHEET_URL)
@@ -218,7 +206,7 @@ def check_apps():
         print(f"❌ Ошибка API Таблиц: {e}"); return
 
     user_stats = {}
-    batched_alerts = {} # 🧺 КОРЗИНКА: Сюда мы будем складывать все изменения, чтобы отправить их разом
+    batched_alerts = {} 
 
     for i, row_values in enumerate(all_rows[1:], start=2):
         row = {headers[j]: (row_values[j] if j < len(row_values) else "") for j in range(len(headers))}
@@ -323,18 +311,15 @@ def check_apps():
         except Exception as e:
             print(f"    ❌ Ошибка {p_id}: {e}")
 
-    # 🚀 ЭТАП 2: РАССЫЛКА ИЗ КОРЗИНКИ (По 1 сообщению на приложение)
     for (pkg_id, c_id, is_ios), data in batched_alerts.items():
         os_icon = "🍎" if is_ios else "🤖"
         msg_prefix = "🔄 АВТО-ОТКАТ" if data['is_rollback'] else "🔔 ИЗМЕНЕНИЯ"
         
-        # 1. Единое сводное сообщение
         summary_msg = f"{msg_prefix} {os_icon}\n📦 {pkg_id}\n\n"
         for geo, changes_list in data['changes'].items():
             summary_msg += f"🌍 [{geo.upper()}]: {', '.join(changes_list)}\n"
         requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": c_id, "text": summary_msg})
         
-        # 2. Единый текстовый файл со всеми локалями
         if data['texts']:
             full_report = f"ОТЧЕТ ОБ ИЗМЕНЕНИЯХ\nПриложение: {pkg_id}\nДата: {get_minsk_time()}\n\n"
             for geo, txt in data['texts'].items():
@@ -346,7 +331,6 @@ def check_apps():
                          data={"chat_id": c_id, "caption": f"📄 Полный отчет: {pkg_id}"}, 
                          files={"document": (f"report_{pkg_id}.txt", full_report.encode('utf-8'))})
                          
-        # 3. Рассылка визуалов (Скриншоты, иконки)
         for vis in data['visuals']:
             geo = vis['geo'].upper()
             if vis['type'] == 'diff':
@@ -363,13 +347,13 @@ def check_apps():
                             "chat_id": c_id, "text": f"⚠️ Скриншоты [{geo}] изменились, но Telegram не смог их отобразить."
                         })
                         
-        # 4. Один пакетный ИИ-анализ
         if data['texts']:
             print(f"🧠 Запуск ИИ для {pkg_id} ({len(data['texts'])} локалей)")
             ai_msg = analyze_batched_changes_with_ai(data['texts'])
             clean_ai = ai_msg.replace('*', '').replace('_', '').replace('#', '').replace('`', '')
             full_text = f"🤖 Глобальный ASO-Анализ ({pkg_id}):\n\n{clean_ai}"
             
+            # Чанкинг сообщений ИИ для бота
             limit = 4000
             for chunk_idx in range(0, len(full_text), limit):
                 chunk = full_text[chunk_idx:chunk_idx+limit]
