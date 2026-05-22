@@ -122,12 +122,14 @@ def fetch_app_data(pkg_id, locale):
         try:
             app_url = f"https://apps.apple.com/{c_code.lower()}/app/id{pkg_id}"
             headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 "Accept-Language": f"{locale},en-US;q=0.9"
             }
             response = requests.get(app_url, headers=headers, timeout=15)
             
             if response.status_code == 200:
+                # 🛑 Жестко ставим кодировку, чтобы избежать западноевропейских кракозябр в HTML
+                response.encoding = 'utf-8'
                 html_content = response.text
                 soup = BeautifulSoup(html_content, 'html.parser')
                 
@@ -137,13 +139,19 @@ def fetch_app_data(pkg_id, locale):
                         subtitle = p_tag.get_text(strip=True)
                 
                 if not subtitle:
-                    sub_match = re.search(r'"subtitle"\s*:\s*"([^"]+)"', html_content)
+                    # 🛑 Улучшенная регулярка, которая не боится внутренних слэшей и кавычек
+                    sub_match = re.search(r'"subtitle"\s*:\s*"((?:[^"\\]|\\.)*)"', html_content)
                     if sub_match:
                         raw_subtitle = sub_match.group(1)
                         try:
+                            # 🛑 Возвращаем unicode-escape для японских, шведских и русских символов
                             subtitle = raw_subtitle.encode('utf-8').decode('unicode-escape')
                         except:
                             subtitle = raw_subtitle
+                
+                # Финальная чистка от случайных кавычек
+                if subtitle:
+                    subtitle = subtitle.strip('"')
                 
                 clean_screens = []
                 all_imgs = soup.find_all('picture')
@@ -304,8 +312,9 @@ def check_apps():
             full_report = f"ОТЧЕТ ОБ ИЗМЕНЕНИЯХ\nПриложение: {pkg_id}\n\n"
             for geo, txt in data['texts'].items():
                 full_report += f"Локаль: {geo.upper()}\n{'='*40}\n"
-                full_report += f"--- БЫЛО ---\nНазвание: {txt['old_t']}\nSD/Subtitle: {txt['old_s']}\n\n"
-                full_report += f"--- СТАЛО ---\nНазвание: {txt['new_t']}\nSD/Subtitle: {txt['new_s']}\n\n"
+                # 🛑 ВОТ ТУТ ВОЗВРАЩЕНО ПОЛНОЕ ОПИСАНИЕ (FD) В TXT ФАЙЛ
+                full_report += f"--- БЫЛО ---\nНазвание: {txt['old_t']}\nSD/Subtitle: {txt['old_s']}\nFD:\n{txt['old_d']}\n\n"
+                full_report += f"--- СТАЛО ---\nНазвание: {txt['new_t']}\nSD/Subtitle: {txt['new_s']}\nFD:\n{txt['new_d']}\n\n"
             requests.post(f"https://api.telegram.org/bot{TOKEN}/sendDocument", 
                          data={"chat_id": c_id, "caption": f"📄 Отчет: {pkg_id}"}, 
                          files={"document": (f"report_{pkg_id}.txt", full_report.encode('utf-8'))})
@@ -324,12 +333,8 @@ def check_apps():
             try:
                 ai_msg = analyze_batched_changes_with_ai(data['texts'])
                 if ai_msg and "❌" not in ai_msg:
-                    clean_ai = ai_msg.replace('*', '').replace('_', '').replace('#', '').replace('`', '')
-                    if len(clean_ai) > 4000:
-                        clean_ai = clean_ai[:3900] + "\n\n(отчет обрезан...)"
-                    print(f"✅ Анализ получен, отправляю в TG...")
-                    requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
-                                 data={"chat_id": c_id, "text": f"🤖 Анализ:\n\n{clean_ai}"})
+                    clean_ai = ai_msg.replace('*', '').replace('_', '').replace('#', '')
+                    requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": c_id, "text": f"🤖 Анализ:\n\n{clean_ai}"})
                 else:
                     print(f"⚠️ ИИ вернул ошибку или пустой ответ: {ai_msg}")
             except Exception as ai_err:
