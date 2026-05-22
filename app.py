@@ -159,47 +159,67 @@ def fetch_app_data(pkg_id, locale):
 
         subtitle = data.get('subtitle', '')
         
-        # --- НАДЕЖНЫЙ ПАРСИНГ BEAUTIFULSOUP ---
-        if not subtitle or not screens:
-            try:
-                app_url = f"https://apps.apple.com/{c_code.lower()}/app/id{pkg_id}"
-                headers = {
-                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Safari/605.1.15",
-                    "Accept-Language": f"{locale},en-US;q=0.9"
-                }
-                response = requests.get(app_url, headers=headers, timeout=15)
+        # --- ФИНАЛЬНЫЙ ПАРСИНГ (СОВПАДАЕТ С БОТОМ) ---
+        try:
+            app_url = f"https://apps.apple.com/{c_code.lower()}/app/id{pkg_id}"
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept-Language": f"{locale},en-US;q=0.9"
+            }
+            response = requests.get(app_url, headers=headers, timeout=15)
+            
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'html.parser')
                 
-                if response.status_code == 200:
-                    soup = BeautifulSoup(response.text, 'html.parser')
-                    
-                    # 1. Ищем сабтайтл (ищет любой заголовок h2, в классе которого есть слово subtitle)
-                    if not subtitle:
-                        subtitle_tag = soup.find('h2', class_=lambda c: c and 'subtitle' in c.lower())
-                        if subtitle_tag:
-                            subtitle = subtitle_tag.get_text(strip=True)
-                    
-                    # 2. Ищем скриншоты (если API их не отдал)
-                    if not screens:
-                        clean_screens = []
-                        picture_tags = soup.find_all('picture')
-                        for pic in picture_tags:
-                            source = pic.find('source', type='image/jpeg') or pic.find('source', type='image/webp')
-                            if source and source.has_attr('srcset'):
-                                img_url = source['srcset'].split()[0]
-                                s_jpg = img_url.replace('.webp', '.jpg').replace('w.webp', 'bb.jpg').replace('w.png', 'bb.png')
-                                
-                                if icon_url and s_jpg.split('/')[-1] == icon_url.split('/')[-1]:
-                                    continue
-                                if s_jpg not in clean_screens and "icon" not in s_jpg.lower():
-                                    clean_screens.append(s_jpg)
+                # 1. Поиск сабтайтла
+                if not subtitle:
+                    st_tag = soup.select_one('.app-header__subtitle, .product-header__subtitle, h2.typography-product-header-subtitle')
+                    if not st_tag:
+                        header = soup.find('header')
+                        if header: st_tag = header.find('h2')
+                    if st_tag:
+                        subtitle = st_tag.get_text(strip=True)
+                
+                # 2. Поиск скриншотов с фильтрацией
+                clean_screens = []
+                all_imgs = soup.find_all('picture')
+                
+                # Шаг А: Строго 300px
+                for pic in all_imgs:
+                    source = pic.find('source', type='image/jpeg') or pic.find('source', type='image/webp')
+                    if source and source.has_attr('srcset'):
+                        img_url = source['srcset'].split()[0]
+                        s_lower = img_url.lower()
+                        if any(x in s_lower for x in ['icon', 'logo', 'artwork', 'brand']): continue
                         
-                        if clean_screens:
-                            screens = clean_screens
-            except Exception as e:
-                print(f"⚠️ Ошибка BeautifulSoup-парсера: {e}")
-        # --------------------------------------
+                        res_match = re.search(r'/(\d+)x(\d+)', s_lower)
+                        if res_match:
+                            w, h = int(res_match.group(1)), int(res_match.group(2))
+                            if (w == 300 or h == 300) and w != h:
+                                s_jpg = img_url.replace('.webp', '.jpg').replace('w.webp', 'bb.jpg').replace('w.png', 'bb.png')
+                                if s_jpg not in clean_screens: clean_screens.append(s_jpg)
 
-        screens = [s.replace('.webp', '.jpg') for s in screens]
+                # Шаг Б: Запасной план (>= 300px)
+                if not clean_screens:
+                    for pic in all_imgs:
+                        source = pic.find('source', type='image/jpeg') or pic.find('source', type='image/webp')
+                        if source and source.has_attr('srcset'):
+                            img_url = source['srcset'].split()[0]
+                            s_lower = img_url.lower()
+                            if any(x in s_lower for x in ['icon', 'logo', 'artwork']): continue
+                            
+                            res_match = re.search(r'/(\d+)x(\d+)', s_lower)
+                            if res_match:
+                                w, h = int(res_match.group(1)), int(res_match.group(2))
+                                if w != h and (w >= 300 or h >= 300):
+                                    s_jpg = img_url.replace('.webp', '.jpg').replace('w.webp', 'bb.jpg')
+                                    if s_jpg not in clean_screens: clean_screens.append(s_jpg)
+                
+                if clean_screens:
+                    screens = clean_screens
+
+        except Exception as e:
+            print(f"⚠️ Ошибка BS4 на сайте: {e}")
 
         return {
             'title': data.get('trackName', ''),
@@ -207,7 +227,7 @@ def fetch_app_data(pkg_id, locale):
             'description': data.get('description', ''),
             'icon': icon_url or '', 
             'headerImage': '',
-            'screenshots': screens or []
+            'screenshots': [s.replace('.webp', '.jpg') for s in screens]
         }
     else:
         return gp_app(pkg_id, lang=l_code, country=c_code)
