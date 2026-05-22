@@ -187,10 +187,11 @@ def fetch_app_data(pkg_id, locale):
             response = requests.get(app_url, headers=headers, timeout=15)
             
             if response.status_code == 200:
+                response.encoding = 'utf-8' 
+                
                 html_content = response.text
                 soup = BeautifulSoup(html_content, 'html.parser')
                 
-                # --- ЛОГИКА "ХИРУРГ": ИЗВЛЕЧЕНИЕ SUBTITLE ---
                 if not subtitle:
                     p_tag = soup.find('p', class_=re.compile(r'^subtitle'))
                     if p_tag:
@@ -201,11 +202,10 @@ def fetch_app_data(pkg_id, locale):
                     if sub_match:
                         raw_subtitle = sub_match.group(1)
                         try:
-                            subtitle = raw_subtitle.encode('utf-8').decode('unicode-escape')
+                            subtitle = json.loads(f'"{raw_subtitle}"')
                         except:
                             subtitle = raw_subtitle
 
-                # --- СКРИНШОТЫ (ЛОГИКА 300px) ---
                 clean_screens = []
                 all_imgs = soup.find_all('picture')
                 
@@ -293,6 +293,9 @@ def load_data():
             if 'check_log' in df.columns and not pd.isna(row['check_log']):
                 try: c_log = json.loads(str(row['check_log']))
                 except: pass
+                
+            # Загружаем сохраненный аудит, если он есть
+            ai_audit = str(row['ai_audit']) if 'ai_audit' in df.columns and not pd.isna(row.get('ai_audit')) else ""
             
             data[u_key] = {
                 "package_id": p_id, "geo": geo, "chat_id": c_id,
@@ -305,7 +308,8 @@ def load_data():
                     "screenshots": json.loads(row['screenshots']) if 'screenshots' in df.columns and not pd.isna(row.get('screenshots')) else []
                 },
                 "history": json.loads(row['history']) if 'history' in df.columns and not pd.isna(row.get('history')) else [],
-                "check_log": c_log
+                "check_log": c_log,
+                "ai_audit": ai_audit
             }
         return data
     except: return {}
@@ -322,7 +326,8 @@ def save_data(data):
                 "header_image": info['current'].get('header_image', ''),
                 "screenshots": json.dumps(info['current'].get('screenshots', []), ensure_ascii=False),
                 "history": json.dumps(info['history'], ensure_ascii=False),
-                "check_log": json.dumps(info.get('check_log', []), ensure_ascii=False)
+                "check_log": json.dumps(info.get('check_log', []), ensure_ascii=False),
+                "ai_audit": info.get('ai_audit', '')
             })
         conn.update(worksheet="apps", data=pd.DataFrame(rows))
         return True
@@ -567,8 +572,11 @@ def render_app_groups(app_groups, os_icon):
                         st.rerun()
                 
                 with col2:
-                    if st.button(f"🧠 Текущий ASO обзор", key=f"ai_force_{pkg_id}_{chat_id}"):
-                        with st.spinner("ИИ анализирует текущие тексты..."):
+                    saved_audit = first_info.get('ai_audit', '')
+                    btn_label = "🔄 Обновить ASO-аудит" if saved_audit else "🧠 Текущий ASO обзор"
+                    
+                    if st.button(btn_label, key=f"ai_force_{pkg_id}_{chat_id}"):
+                        with st.spinner("ИИ анализирует тексты..."):
                             batched_current = {}
                             for k in keys:
                                 inf = db[k]
@@ -581,13 +589,19 @@ def render_app_groups(app_groups, os_icon):
                             if batched_current:
                                 ai_msg = analyze_current_aso_with_ai(batched_current)
                                 if ai_msg and "❌" not in ai_msg:
-                                    st.success("✅ Отчет успешно сгенерирован!")
-                                    with st.expander(f"📊 ASO-аудит: {main_title}", expanded=True):
-                                        st.markdown(ai_msg)
+                                    # Сохраняем аудит в первую локаль группы
+                                    db[keys[0]]['ai_audit'] = ai_msg
+                                    save_data(db)
+                                    st.rerun()
                                 else:
                                     st.error(f"Ошибка ИИ: {ai_msg}")
                             else:
                                 st.error("Нет данных для анализа.")
+            
+            # Отображаем сохраненный аудит прямо под кнопками
+            if first_info.get('ai_audit'):
+                with st.expander("📊 Сохраненный ИИ-Аудит (Текущая стратегия)"):
+                    st.markdown(first_info['ai_audit'])
 
             st.markdown("---")
             tabs_loc = st.tabs([GP_LOCALES_RAW.get(db[k]['geo'], db[k]['geo']) for k in keys])
