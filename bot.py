@@ -333,12 +333,24 @@ def check_apps():
             try:
                 ai_msg = analyze_batched_changes_with_ai(data['texts'])
                 if ai_msg and "❌" not in ai_msg:
-                    clean_ai = ai_msg.replace('*', '').replace('_', '').replace('#', '')
-                    requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": c_id, "text": f"🤖 Анализ:\n\n{clean_ai}"})
+                    clean_ai = ai_msg.replace('*', '').replace('_', '').replace('#', '').replace('`', '')
+                    print(f"✅ Анализ получен, отправляю в TG (с разбивкой)...")
+                    
+                    # 🛑 УМНАЯ ОТПРАВКА БЕЗ ОБРЕЗАНИЯ ТЕКСТА
+                    full_text = f"🤖 Анализ:\n\n{clean_ai}"
+                    limit = 3900
+                    for chunk_start in range(0, len(full_text), limit):
+                        chunk = full_text[chunk_start:chunk_start+limit]
+                        requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": c_id, "text": chunk})
+                        time.sleep(1) # Защита от спам-фильтра Telegram
                 else:
                     print(f"⚠️ ИИ вернул ошибку или пустой ответ: {ai_msg}")
             except Exception as ai_err:
                 print(f"❌ Критическая ошибка при работе с ИИ: {ai_err}")
+
+            # 🛑 ПАУЗА 45 СЕК ДЛЯ ОБХОДА ЛИМИТА GEMINI (15 запросов в минуту)
+            print(f"⏳ Ожидание 45 секунд для сброса лимитов ИИ...")
+            time.sleep(45)
 
 if __name__ == "__main__":
     check_apps()
