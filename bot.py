@@ -122,7 +122,7 @@ def fetch_app_data(pkg_id, locale):
         try:
             app_url = f"https://apps.apple.com/{c_code.lower()}/app/id{pkg_id}"
             headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
                 "Accept-Language": f"{locale},en-US;q=0.9"
             }
             response = requests.get(app_url, headers=headers, timeout=15)
@@ -131,14 +131,11 @@ def fetch_app_data(pkg_id, locale):
                 html_content = response.text
                 soup = BeautifulSoup(html_content, 'html.parser')
                 
-                # --- УТОЧНЕННЫЙ ПАРСИНГ SUBTITLE ---
                 if not subtitle:
-                    # Ищем тег <p> с классом, начинающимся на subtitle (svelte-friendly)
                     p_tag = soup.find('p', class_=re.compile(r'^subtitle'))
                     if p_tag:
                         subtitle = p_tag.get_text(strip=True)
                 
-                # Если тег <p> не найден, используем метод извлечения из JSON-строки
                 if not subtitle:
                     sub_match = re.search(r'"subtitle"\s*:\s*"([^"]+)"', html_content)
                     if sub_match:
@@ -148,7 +145,6 @@ def fetch_app_data(pkg_id, locale):
                         except:
                             subtitle = raw_subtitle
                 
-                # --- СКРИНШОТЫ (ПРОВЕРЕННАЯ ЛОГИКА 300px) ---
                 clean_screens = []
                 all_imgs = soup.find_all('picture')
                 
@@ -324,9 +320,20 @@ def check_apps():
                 if media: requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMediaGroup", json={"chat_id": c_id, "media": media})
                         
         if data['texts']:
-            ai_msg = analyze_batched_changes_with_ai(data['texts'])
-            clean_ai = ai_msg.replace('*', '').replace('_', '').replace('#', '')
-            requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": c_id, "text": f"🤖 Анализ:\n\n{clean_ai}"})
+            print(f"🧠 Запуск ИИ для {pkg_id}...")
+            try:
+                ai_msg = analyze_batched_changes_with_ai(data['texts'])
+                if ai_msg and "❌" not in ai_msg:
+                    clean_ai = ai_msg.replace('*', '').replace('_', '').replace('#', '').replace('`', '')
+                    if len(clean_ai) > 4000:
+                        clean_ai = clean_ai[:3900] + "\n\n(отчет обрезан...)"
+                    print(f"✅ Анализ получен, отправляю в TG...")
+                    requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
+                                 data={"chat_id": c_id, "text": f"🤖 Анализ:\n\n{clean_ai}"})
+                else:
+                    print(f"⚠️ ИИ вернул ошибку или пустой ответ: {ai_msg}")
+            except Exception as ai_err:
+                print(f"❌ Критическая ошибка при работе с ИИ: {ai_err}")
 
 if __name__ == "__main__":
     check_apps()
