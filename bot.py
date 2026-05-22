@@ -129,25 +129,29 @@ def fetch_app_data(pkg_id, locale):
             
             if response.status_code == 200:
                 html_content = response.text
+                soup = BeautifulSoup(html_content, 'html.parser')
                 
-                # --- ЛОГИКА "ХИРУРГ": ИЗВЛЕЧЕНИЕ SUBTITLE ИЗ JSON-СТРОКИ ---
+                # --- УТОЧНЕННЫЙ ПАРСИНГ SUBTITLE ---
                 if not subtitle:
-                    # Ищем подстроку "subtitle":"..."
+                    # Ищем тег <p> с классом, начинающимся на subtitle (svelte-friendly)
+                    p_tag = soup.find('p', class_=re.compile(r'^subtitle'))
+                    if p_tag:
+                        subtitle = p_tag.get_text(strip=True)
+                
+                # Если тег <p> не найден, используем метод извлечения из JSON-строки
+                if not subtitle:
                     sub_match = re.search(r'"subtitle"\s*:\s*"([^"]+)"', html_content)
                     if sub_match:
                         raw_subtitle = sub_match.group(1)
-                        # Декодируем unicode-последовательности (\uXXXX)
                         try:
                             subtitle = raw_subtitle.encode('utf-8').decode('unicode-escape')
                         except:
                             subtitle = raw_subtitle
                 
                 # --- СКРИНШОТЫ (ПРОВЕРЕННАЯ ЛОГИКА 300px) ---
-                soup = BeautifulSoup(html_content, 'html.parser')
                 clean_screens = []
                 all_imgs = soup.find_all('picture')
                 
-                # Попытка 1: Строго 300px
                 for pic in all_imgs:
                     source = pic.find('source', type='image/jpeg') or pic.find('source', type='image/webp')
                     if source and source.has_attr('srcset'):
@@ -161,7 +165,6 @@ def fetch_app_data(pkg_id, locale):
                                 s_jpg = img_url.replace('.webp', '.jpg').replace('w.webp', 'bb.jpg').replace('w.png', 'bb.png')
                                 if s_jpg not in clean_screens: clean_screens.append(s_jpg)
 
-                # Попытка 2: Запасной план (>= 300px и не квадрат)
                 if not clean_screens:
                     for pic in all_imgs:
                         source = pic.find('source', type='image/jpeg') or pic.find('source', type='image/webp')
