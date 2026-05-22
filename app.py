@@ -148,18 +148,10 @@ def fetch_app_data(pkg_id, locale):
                 raise Exception(f"Приложение {pkg_id} не найдено в App Store ({c_code})")
         
         data = res['results'][0]
-        
-        screens = data.get('screenshotUrls', [])
-        if not screens:
-            screens = data.get('ipadScreenshotUrls', [])
-
-        icon_url = data.get('artworkUrl512', data.get('artworkUrl100', ''))
-        if icon_url: 
-            icon_url = icon_url.replace('.webp', '.jpg')
-
+        screens = data.get('screenshotUrls', []) or data.get('ipadScreenshotUrls', [])
+        icon_url = data.get('artworkUrl512', data.get('artworkUrl100', '')).replace('.webp', '.jpg')
         subtitle = data.get('subtitle', '')
         
-        # --- ФИНАЛЬНЫЙ ПАРСИНГ (СОВПАДАЕТ С БОТОМ) ---
         try:
             app_url = f"https://apps.apple.com/{c_code.lower()}/app/id{pkg_id}"
             headers = {
@@ -169,29 +161,34 @@ def fetch_app_data(pkg_id, locale):
             response = requests.get(app_url, headers=headers, timeout=15)
             
             if response.status_code == 200:
-                soup = BeautifulSoup(response.text, 'html.parser')
+                html_content = response.text
+                soup = BeautifulSoup(html_content, 'html.parser')
                 
-                # 1. Поиск сабтайтла
+                # --- ЛОГИКА "ХИРУРГ": ИЗВЛЕЧЕНИЕ SUBTITLE ---
                 if not subtitle:
-                    st_tag = soup.select_one('.app-header__subtitle, .product-header__subtitle, h2.typography-product-header-subtitle')
-                    if not st_tag:
-                        header = soup.find('header')
-                        if header: st_tag = header.find('h2')
-                    if st_tag:
-                        subtitle = st_tag.get_text(strip=True)
+                    p_tag = soup.find('p', class_=re.compile(r'^subtitle'))
+                    if p_tag:
+                        subtitle = p_tag.get_text(strip=True)
                 
-                # 2. Поиск скриншотов с фильтрацией
+                if not subtitle:
+                    sub_match = re.search(r'"subtitle"\s*:\s*"([^"]+)"', html_content)
+                    if sub_match:
+                        raw_subtitle = sub_match.group(1)
+                        try:
+                            subtitle = raw_subtitle.encode('utf-8').decode('unicode-escape')
+                        except:
+                            subtitle = raw_subtitle
+
+                # --- СКРИНШОТЫ (ЛОГИКА 300px) ---
                 clean_screens = []
                 all_imgs = soup.find_all('picture')
                 
-                # Шаг А: Строго 300px
                 for pic in all_imgs:
                     source = pic.find('source', type='image/jpeg') or pic.find('source', type='image/webp')
                     if source and source.has_attr('srcset'):
                         img_url = source['srcset'].split()[0]
                         s_lower = img_url.lower()
                         if any(x in s_lower for x in ['icon', 'logo', 'artwork', 'brand']): continue
-                        
                         res_match = re.search(r'/(\d+)x(\d+)', s_lower)
                         if res_match:
                             w, h = int(res_match.group(1)), int(res_match.group(2))
@@ -199,7 +196,6 @@ def fetch_app_data(pkg_id, locale):
                                 s_jpg = img_url.replace('.webp', '.jpg').replace('w.webp', 'bb.jpg').replace('w.png', 'bb.png')
                                 if s_jpg not in clean_screens: clean_screens.append(s_jpg)
 
-                # Шаг Б: Запасной план (>= 300px)
                 if not clean_screens:
                     for pic in all_imgs:
                         source = pic.find('source', type='image/jpeg') or pic.find('source', type='image/webp')
@@ -207,7 +203,6 @@ def fetch_app_data(pkg_id, locale):
                             img_url = source['srcset'].split()[0]
                             s_lower = img_url.lower()
                             if any(x in s_lower for x in ['icon', 'logo', 'artwork']): continue
-                            
                             res_match = re.search(r'/(\d+)x(\d+)', s_lower)
                             if res_match:
                                 w, h = int(res_match.group(1)), int(res_match.group(2))
@@ -413,73 +408,38 @@ st.title("🚀 ASO Monitor PRO")
 st.caption("Поддерживает Google Play (ID: com.app.name) и App Store (ID: 123456789)")
 db = load_data()
 
-if st.button("🔍 Проверить вообще всё", type="primary"):
-    with st.spinner("Тотальная проверка стора и пакетный анализ ИИ..."):
-        updates_count = 0
-        user_reports = {} 
-        batched_ai = {}
-        
-        for key, info in db.items():
-            u, _, txt_payload = run_check_for_item(key, info, user_reports, single_mode=False, skip_ai=True)
-            updates_count += u
-            if txt_payload:
-                b_key = (info['package_id'], info['chat_id'])
-                if b_key not in batched_ai: batched_ai[b_key] = {}
-                batched_ai[b_key][info['geo']] = txt_payload
-        
-        for (pkg_id, c_id), loc_data in batched_ai.items():
-            if loc_data:
-                ai_msg = analyze_batched_changes_with_ai(loc_data)
-                clean_ai = ai_msg.replace('*', '').replace('_', '').replace('#', '').replace('`', '')
-                send_telegram_msg(f"🤖 Глобальный ASO-Анализ ({pkg_id}):\n\n{clean_ai}", c_id)
-                time.sleep(3) 
-        
-        if updates_count > 0:
-            for c_id, rep_text in user_reports.items():
-                send_telegram_file(rep_text, "global_aso_report.txt", f"📊 Массовая проверка: найдено {updates_count} изменений.", c_id)
-            st.success(f"Проверка окончена. Найдено изменений: {updates_count}. Отчеты отправлены!")
-        else:
-            st.info("Изменений не обнаружено. (Новые визуалы инициализированы, если их не было)")
-            
-        save_data(db)
-        st.rerun()
-
+# --- САЙДБАР ---
 with st.sidebar:
+    st.header("👤 Профиль пользователя")
+    if users_dict:
+        # Режим просмотра: Показать все или конкретного пользователя
+        view_user = st.selectbox("Режим просмотра", options=["Все приложения"] + list(users_dict.keys()))
+        view_chat_id = str(users_dict[view_user]).strip() if view_user != "Все приложения" else None
+    else:
+        st.warning("Пользователи не найдены.")
+        view_user = "Все приложения"
+        view_chat_id = None
+
+    st.divider()
     st.header("➕ Добавить приложение")
     st.info("Чтобы получать уведомления, сначала напишите боту.")
     st.link_button("➕ Добавить бота", "https://t.me/aso_omg_bot", use_container_width=True)
-    st.divider()
     
     new_id = st.text_input("Package ID / App ID", placeholder="com.app.name ИЛИ 835599320").strip()
-    
-    selected_names = st.multiselect("Выберите локали (можно несколько)", options=list(GP_LOCALES_RAW.values()), default=["English (United States)"])
+    selected_names = st.multiselect("Выберите локали", options=list(GP_LOCALES_RAW.values()), default=["English (United States)"])
     new_geos = [k for k, v in GP_LOCALES_RAW.items() if v in selected_names]
     
     if users_dict:
-        user_name = st.selectbox("Пользователь", options=["Выбрать..."] + list(users_dict.keys()))
+        add_for_user = st.selectbox("Добавить для пользователя", options=["Выбрать..."] + list(users_dict.keys()))
     else:
-        st.warning("Пользователи не найдены.")
-        user_name = "Выбрать..."
+        add_for_user = "Выбрать..."
 
     if st.button("Добавить в мониторинг", type="primary", use_container_width=True):
-        if new_id and new_geos and user_name != "Выбрать...":
-            selected_chat_id = str(users_dict[user_name]).strip()
+        if new_id and new_geos and add_for_user != "Выбрать...":
+            selected_chat_id = str(users_dict[add_for_user]).strip()
             
-            # --- ЗАЩИТА: ЛИМИТ 10 iOS ЛОКАЛЕЙ НА ПОЛЬЗОВАТЕЛЯ ---
-            if new_id.isdigit():
-                current_ios_count = sum(
-                    1 for info in db.values() 
-                    if str(info.get('chat_id')).strip() == selected_chat_id and str(info.get('package_id')).isdigit()
-                )
-                requested_count = len(new_geos)
-                
-                if current_ios_count + requested_count > 10:
-                    st.error(f"🛑 Лимит iOS превышен! У вас уже {current_ios_count}/10 локалей. Вы пытаетесь добавить еще {requested_count}.")
-                    st.stop()
-            # --------------------------------------------------
-
             success_added = 0
-            with st.spinner(f"Загрузка локалей ({len(new_geos)} шт.)..."):
+            with st.spinner(f"Загрузка локалей..."):
                 for geo in new_geos:
                     u_key = f"{new_id}_{geo}_{selected_chat_id}"
                     if u_key in db: 
@@ -504,12 +464,40 @@ with st.sidebar:
                 st.success(f"Успешно добавлено локалей: {success_added}")
                 st.rerun()
         else:
-            st.warning("Заполните ID, выберите локали and пользователя!")
+            st.warning("Заполните ID, локали и пользователя!")
 
+# --- ОСНОВНАЯ ЧАСТЬ ---
+if st.button("🔍 Проверить вообще всё", type="primary"):
+    with st.spinner("Проверка обновлений..."):
+        updates_count = 0
+        batched_ai = {}
+        for key, info in db.items():
+            u, _, txt_payload = run_check_for_item(key, info, {}, single_mode=False, skip_ai=True)
+            updates_count += u
+            if txt_payload:
+                b_key = (info['package_id'], info['chat_id'])
+                if b_key not in batched_ai: batched_ai[b_key] = {}
+                batched_ai[b_key][info['geo']] = txt_payload
+        
+        for (pkg_id, c_id), loc_data in batched_ai.items():
+            if loc_data:
+                ai_msg = analyze_batched_changes_with_ai(loc_data)
+                clean_ai = ai_msg.replace('*', '').replace('_', '').replace('#', '').replace('`', '')
+                send_telegram_msg(f"🤖 Глобальный ASO-Анализ ({pkg_id}):\n\n{clean_ai}", c_id)
+        
+        save_data(db)
+        st.success(f"Готово. Изменений: {updates_count}")
+        st.rerun()
+
+# --- ФИЛЬТРАЦИЯ И ГРУППИРОВКА ---
 android_apps = {}
 ios_apps = {}
 
 for key, info in db.items():
+    # Если выбран конкретный пользователь в сайдбаре - фильтруем
+    if view_chat_id and str(info.get('chat_id')).strip() != view_chat_id:
+        continue
+
     grp = (info['package_id'], info['chat_id'])
     if str(info['package_id']).isdigit():
         if grp not in ios_apps: ios_apps[grp] = []
@@ -522,7 +510,7 @@ tab_android, tab_ios = st.tabs(["🤖 Android (Google Play)", "🍎 iOS (App Sto
 
 def render_app_groups(app_groups, os_icon):
     if not app_groups:
-        st.info("В этой категории пока нет отслеживаемых приложений.")
+        st.info("Нет приложений для отображения.")
         return
         
     for (pkg_id, chat_id), keys in app_groups.items():
@@ -531,118 +519,56 @@ def render_app_groups(app_groups, os_icon):
         main_title = first_info['current']['title']
         main_icon = first_info['current'].get('icon')
 
-        with st.expander(f"{os_icon} | {main_title} ({pkg_id}) | 👤 {owner_name} | 🌍 Локалей: {len(keys)}"):
+        with st.expander(f"{os_icon} | {main_title} ({pkg_id}) | 👤 {owner_name}"):
+            # Контент группы (как в старом коде)
             col_img, col_space, col_btn = st.columns([1, 2, 4])
-            
             with col_img:
                 if main_icon and main_icon != 'nan': st.image(main_icon, width=80)
-                
+            
             with col_btn:
                 col1, col2 = st.columns(2)
                 with col1:
-                    if st.button(f"🔍 Проверить все локали ({len(keys)} шт.)", key=f"ch_grp_{pkg_id}_{chat_id}"):
-                        with st.spinner("Сверка всей группы со стором..."):
-                            user_reports = {}
+                    if st.button(f"🔍 Проверить локали ({len(keys)})", key=f"ch_grp_{pkg_id}_{chat_id}"):
+                        with st.spinner("Сверка..."):
                             upd = 0
                             batched_ai = {}
-                            changes_summary = {} 
-                            
                             for k in keys:
-                                u, changed_list, txt_payload = run_check_for_item(k, db[k], user_reports, single_mode=False, skip_ai=True)
+                                u, _, txt_payload = run_check_for_item(k, db[k], {}, single_mode=False, skip_ai=True)
                                 upd += u
-                                if changed_list:
-                                    changes_summary[db[k]['geo']] = changed_list
-                                if txt_payload:
-                                    batched_ai[db[k]['geo']] = txt_payload
-                                    
-                            if upd > 0:
-                                os_icon = "🍎" if str(pkg_id).isdigit() else "🤖"
-                                summary_msg = f"⚠️ ИЗМЕНЕНИЯ (Ручная проверка) {os_icon}\n📦 {pkg_id}\n\n"
-                                for geo, clist in changes_summary.items():
-                                    summary_msg += f"🌍 [{geo.upper()}]: {', '.join(clist)}\n"
-                                send_telegram_msg(summary_msg, chat_id)
-                                
-                                if batched_ai:
-                                    full_report = f"ОТЧЕТ ОБ ИЗМЕНЕНИЯХ\nПриложение: {pkg_id}\nДата: {get_minsk_time()}\n\n"
-                                    for geo, txt in batched_ai.items():
-                                        full_report += f"Локаль: {geo.upper()}\n{'='*40}\n"
-                                        full_report += f"--- БЫЛО ---\nНазвание: {txt['old_t']}\nSD/Subtitle: {txt['old_s']}\nFD:\n{txt['old_d']}\n\n"
-                                        full_report += f"--- СТАЛО ---\nНазвание: {txt['new_t']}\nSD/Subtitle: {txt['new_s']}\nFD:\n{txt['new_d']}\n\n"
-                                    send_telegram_file(full_report, f"report_{pkg_id}.txt", f"📄 Полный отчет: {pkg_id}", chat_id)
-                                    
-                                    ai_msg = analyze_batched_changes_with_ai(batched_ai)
-                                    clean_ai = ai_msg.replace('*', '').replace('_', '').replace('#', '').replace('`', '')
-                                    send_telegram_msg(f"🤖 Пакетный ИИ-анализ ({pkg_id}):\n\n{clean_ai}", chat_id)
-
-                                st.success(f"Обновлено локалей: {upd}. Отчеты отправлены.")
-                            else:
-                                st.info("Группа проверена. Без изменений.")
-                            save_data(db)
-                            st.rerun()
+                                if txt_payload: batched_ai[db[k]['geo']] = txt_payload
+                            if upd > 0 and batched_ai:
+                                ai_msg = analyze_batched_changes_with_ai(batched_ai)
+                                send_telegram_msg(f"🤖 Пакетный анализ ({pkg_id}):\n\n{ai_msg}", chat_id)
+                        save_data(db)
+                        st.rerun()
                 
                 with col2:
-                    if st.button(f"🧠 Глобальный ИИ-анализ текущего ASO", key=f"ai_force_{pkg_id}_{chat_id}"):
-                        with st.spinner("ИИ генерирует обзор по текущим текстам таблицы..."):
-                            batched_current = {}
-                            for k in keys:
-                                inf = db[k]
-                                batched_current[inf['geo']] = {
-                                    'old_t': inf['current']['title'], 'new_t': inf['current']['title'],
-                                    'old_s': inf['current']['summary'], 'new_s': inf['current']['summary'],
-                                    'old_d': inf['current']['description'], 'new_d': inf['current']['description']
-                                }
-                            if batched_current:
-                                ai_msg = analyze_batched_changes_with_ai(batched_current)
-                                clean_ai = ai_msg.replace('*', '').replace('_', '').replace('#', '').replace('`', '')
-                                send_telegram_msg(f"🧠 Текущий обзор ASO-стратегии конкурента ({pkg_id}):\n\n{clean_ai}", chat_id)
-                                st.success("ASO-анализ успешно отправлен тебе в Telegram!")
+                    if st.button(f"🧠 Текущий ASO обзор", key=f"ai_force_{pkg_id}_{chat_id}"):
+                        batched_current = {db[k]['geo']: {
+                            'old_t': db[k]['current']['title'], 'new_t': db[k]['current']['title'],
+                            'old_s': db[k]['current']['summary'], 'new_s': db[k]['current']['summary'],
+                            'old_d': db[k]['current']['description'], 'new_d': db[k]['current']['description']
+                        } for k in keys}
+                        ai_msg = analyze_batched_changes_with_ai(batched_current)
+                        send_telegram_msg(f"🧠 Обзор ASO ({pkg_id}):\n\n{ai_msg}", chat_id)
+                        st.success("Отправлено в TG")
 
             st.markdown("---")
-            
-            locale_labels = [GP_LOCALES_RAW.get(db[k]['geo'], db[k]['geo']) for k in keys]
-            tabs_loc = st.tabs(locale_labels)
-            
+            tabs_loc = st.tabs([GP_LOCALES_RAW.get(db[k]['geo'], db[k]['geo']) for k in keys])
             for i, k in enumerate(keys):
-                info = db[k]
                 with tabs_loc[i]:
-                    loc_icon = info['current'].get('icon')
-                    loc_header = info['current'].get('header_image')
-                    loc_scr_count = len(info['current'].get('screenshots', []))
-
-                    col_loc_img, col_info, col_del = st.columns([1.5, 4, 1])
-                    
-                    with col_loc_img:
-                        if loc_icon and loc_icon != 'nan': 
-                            st.image(loc_icon, width=80, caption="Локальная Иконка")
-                        if loc_header and loc_header != 'nan': 
-                            st.image(loc_header, width=150, caption="Локальный Баннер (FG)")
-                        if loc_scr_count > 0:
-                            st.caption(f"📸 Скриншотов: {loc_scr_count}")
-
-                    with col_info:
-                        st.write(f"**Локаль (Код):** `{info['geo']}`")
-                        
-                        if st.button("Проверить локаль", key=f"ch_sng_{k}"):
-                            with st.spinner("Проверка одной локали..."):
-                                user_reports = {} 
-                                u, _, _ = run_check_for_item(k, info, user_reports, single_mode=True, skip_ai=False)
-                                if u > 0: st.success(f"Обновлено. Отчет отправлен.")
-                                else: st.info("Без изменений.")
-                                save_data(db)
-                                st.rerun()
-
-                        if info['history']:
-                            st.warning("⚠️ Есть старые версии!")
-                            rep = f"БЫЛО:\n{info['history'][-1]}\n\nСТАЛО:\n{info['current']}"
-                            st.download_button(label="📥 Скачать историю", data=rep, file_name=f"aso_{k}.txt", key=f"dl_{k}")
-                        
-                        st.markdown("🕒 **История проверок:**")
-                        if info.get('check_log'):
-                            for log in reversed(info['check_log']):
-                                st.text(f"[{log['time']}] {log['status']}")
-                    
-                    with col_del:
-                        if st.button("🗑️ Удалить", key=f"del_{k}"):
+                    info = db[k]
+                    c1, c2, c3 = st.columns([1.5, 4, 1])
+                    with c1:
+                        if info['current'].get('icon'): st.image(info['current']['icon'], width=70)
+                    with c2:
+                        st.write(f"**Локаль:** `{info['geo']}`")
+                        if st.button("Проверить", key=f"btn_sng_{k}"):
+                            run_check_for_item(k, info, {}, single_mode=True)
+                            save_data(db)
+                            st.rerun()
+                    with c3:
+                        if st.button("🗑️", key=f"del_{k}"):
                             del db[k]
                             save_data(db)
                             st.rerun()
