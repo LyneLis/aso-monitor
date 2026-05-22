@@ -194,24 +194,23 @@ def fetch_app_data(pkg_id, locale):
         try:
             app_url = f"https://apps.apple.com/{c_code.lower()}/app/id{pkg_id}"
             headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 "Accept-Language": f"{locale},en-US;q=0.9"
             }
             response = requests.get(app_url, headers=headers, timeout=15)
             
             if response.status_code == 200:
-                # 🛑 Принудительно читаем байты, чтобы requests не сломал кодировку
                 html_content = response.content.decode('utf-8', errors='replace')
                 soup = BeautifulSoup(html_content, 'html.parser')
                 
-                # --- ЛОГИКА "ХИРУРГ": ИЗВЛЕЧЕНИЕ SUBTITLE ---
                 if not subtitle:
                     p_tag = soup.find('p', class_=re.compile(r'^subtitle'))
                     if p_tag:
                         subtitle = p_tag.get_text(strip=True)
                 
                 if not subtitle:
-                    sub_match = re.search(r'"subtitle"\s*:\s*"([^"]+)"', html_content)
+                    # 🛑 Улучшенная регулярка для захвата сабтайтлов с внутренними экранированными кавычками
+                    sub_match = re.search(r'"subtitle"\s*:\s*"((?:[^"\\]|\\.)*)"', html_content)
                     if sub_match:
                         raw_subtitle = sub_match.group(1)
                         try:
@@ -219,14 +218,12 @@ def fetch_app_data(pkg_id, locale):
                         except:
                             subtitle = raw_subtitle
 
-                # 🛑 ЗАЩИТА ОТ ДВОЙНОЙ КОДИРОВКИ
                 if subtitle:
                     try:
                         subtitle = subtitle.encode('latin-1').decode('utf-8')
                     except UnicodeEncodeError:
                         pass
-
-                # --- СКРИНШОТЫ (ЛОГИКА 300px) ---
+                
                 clean_screens = []
                 all_imgs = soup.find_all('picture')
                 
@@ -559,24 +556,28 @@ if st.button("🔍 Проверить вообще всё", type="primary"):
             for geo, clist in data['changes'].items():
                 summary_msg += f"🌍 [{geo.upper()}]: {', '.join(clist)}\n"
             send_telegram_msg(summary_msg, c_id)
+            time.sleep(1) 
             
             # Отправка TXT отчетов
             if data['texts']:
                 full_report = f"ОТЧЕТ ОБ ИЗМЕНЕНИЯХ\nПриложение: {pkg_id}\n\n"
                 for geo, txt in data['texts'].items():
                     full_report += f"Локаль: {geo.upper()}\n{'='*40}\n"
-                    full_report += f"--- БЫЛО ---\nНазвание: {txt['old_t']}\nSD/Subtitle: {txt['old_s']}\n\n"
-                    full_report += f"--- СТАЛО ---\nНазвание: {txt['new_t']}\nSD/Subtitle: {txt['new_s']}\n\n"
+                    full_report += f"--- БЫЛО ---\nНазвание: {txt['old_t']}\nSD/Subtitle: {txt['old_s']}\nFD:\n{txt['old_d']}\n\n"
+                    full_report += f"--- СТАЛО ---\nНазвание: {txt['new_t']}\nSD/Subtitle: {txt['new_s']}\nFD:\n{txt['new_d']}\n\n"
                 send_telegram_file(full_report, f"report_{pkg_id}.txt", f"📄 Отчет: {pkg_id}", c_id)
+                time.sleep(1)
             
             # Отправка графики
             for vis in data['visuals']:
                 geo = vis['geo'].upper()
                 if vis['type'] == 'diff':
                     send_visual_diff(c_id, token, vis['old'], vis['new'], vis['name'], pkg_id, geo)
+                    time.sleep(1.5)
                 elif vis['type'] == 'screens' and vis['screens']:
                     media = [{"type": "photo", "media": s, "parse_mode": "HTML", "caption": f"📱 Скриншот {pkg_id} [{geo}]" if idx == 0 else ""} for idx, s in enumerate(vis['screens'][:10])]
                     requests.post(f"https://api.telegram.org/bot{token}/sendMediaGroup", json={"chat_id": c_id, "media": media})
+                    time.sleep(2)
             
             # ИИ-анализ
             if data['texts']:
