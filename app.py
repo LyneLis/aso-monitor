@@ -151,6 +151,19 @@ users_dict = get_users()
 def get_minsk_time():
     return (datetime.utcnow() + timedelta(hours=3)).strftime("%d.%m.%Y %H:%M:%S")
 
+def send_visual_diff(chat_id, token, old_url, new_url, name, p_id, geo):
+    if not old_url or not new_url or old_url.lower() == 'nan' or new_url.lower() == 'nan': 
+        return
+    url = f"https://api.telegram.org/bot{token}/sendMediaGroup"
+    media = [
+        {"type": "photo", "media": old_url, "parse_mode": "HTML", "caption": f"🔴 <b>БЫЛО</b> | {name}\n📦 {p_id} [{geo}]"},
+        {"type": "photo", "media": new_url, "parse_mode": "HTML", "caption": f"🟢 <b>СТАЛО</b> | {name}\n📦 {p_id} [{geo}]"}
+    ]
+    try:
+        requests.post(url, json={"chat_id": chat_id, "media": media})
+    except Exception as e:
+        print(f"⚠️ Ошибка отправки медиа-группы: {e}")
+
 def fetch_app_data(pkg_id, locale):
     if locale == "es-419":
         l_code, c_code = "es-419", "MX" 
@@ -181,17 +194,17 @@ def fetch_app_data(pkg_id, locale):
         try:
             app_url = f"https://apps.apple.com/{c_code.lower()}/app/id{pkg_id}"
             headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
                 "Accept-Language": f"{locale},en-US;q=0.9"
             }
             response = requests.get(app_url, headers=headers, timeout=15)
             
             if response.status_code == 200:
-                response.encoding = 'utf-8' 
-                
-                html_content = response.text
+                # 🛑 Принудительно читаем байты, чтобы requests не сломал кодировку
+                html_content = response.content.decode('utf-8', errors='replace')
                 soup = BeautifulSoup(html_content, 'html.parser')
                 
+                # --- ЛОГИКА "ХИРУРГ": ИЗВЛЕЧЕНИЕ SUBTITLE ---
                 if not subtitle:
                     p_tag = soup.find('p', class_=re.compile(r'^subtitle'))
                     if p_tag:
@@ -206,6 +219,14 @@ def fetch_app_data(pkg_id, locale):
                         except:
                             subtitle = raw_subtitle
 
+                # 🛑 ЗАЩИТА ОТ ДВОЙНОЙ КОДИРОВКИ
+                if subtitle:
+                    try:
+                        subtitle = subtitle.encode('latin-1').decode('utf-8')
+                    except UnicodeEncodeError:
+                        pass
+
+                # --- СКРИНШОТЫ (ЛОГИКА 300px) ---
                 clean_screens = []
                 all_imgs = soup.find_all('picture')
                 
@@ -294,7 +315,6 @@ def load_data():
                 try: c_log = json.loads(str(row['check_log']))
                 except: pass
                 
-            # Загружаем сохраненный аудит, если он есть
             ai_audit = str(row['ai_audit']) if 'ai_audit' in df.columns and not pd.isna(row.get('ai_audit')) else ""
             
             data[u_key] = {
@@ -498,25 +518,83 @@ with st.sidebar:
 
 # --- ОСНОВНАЯ ЧАСТЬ ---
 if st.button("🔍 Проверить вообще всё", type="primary"):
-    with st.spinner("Проверка обновлений..."):
+    with st.spinner("Тотальная проверка обновлений... (Может занять время из-за лимитов ИИ)"):
         updates_count = 0
-        batched_ai = {}
-        for key, info in db.items():
-            u, _, txt_payload = run_check_for_item(key, info, {}, single_mode=False, skip_ai=True)
-            updates_count += u
-            if txt_payload:
-                b_key = (info['package_id'], info['chat_id'])
-                if b_key not in batched_ai: batched_ai[b_key] = {}
-                batched_ai[b_key][info['geo']] = txt_payload
+        batched_alerts = {}
         
-        for (pkg_id, c_id), loc_data in batched_ai.items():
-            if loc_data:
-                ai_msg = analyze_batched_changes_with_ai(loc_data)
-                clean_ai = ai_msg.replace('*', '').replace('_', '').replace('#', '').replace('`', '')
-                send_telegram_msg(f"🤖 Глобальный ASO-Анализ ({pkg_id}):\n\n{clean_ai}", c_id)
+        for key, info in db.items():
+            old_icon = info['current'].get('icon', '')
+            old_header = info['current'].get('header_image', '')
+            
+            u, changed_list, txt_payload = run_check_for_item(key, info, {}, single_mode=False, skip_ai=True)
+            updates_count += u
+            
+            if u > 0:
+                p_id = info['package_id']
+                c_id = info['chat_id']
+                geo = info['geo']
+                is_ios = str(p_id).isdigit()
+                b_key = (p_id, c_id, is_ios)
+                
+                if b_key not in batched_alerts:
+                    batched_alerts[b_key] = {'changes': {}, 'texts': {}, 'visuals': []}
+                
+                batched_alerts[b_key]['changes'][geo] = changed_list
+                
+                if "Иконка" in changed_list:
+                    batched_alerts[b_key]['visuals'].append({'type': 'diff', 'name': 'Иконка', 'old': old_icon, 'new': info['current'].get('icon', ''), 'geo': geo})
+                if "Feature Graphic" in changed_list:
+                    batched_alerts[b_key]['visuals'].append({'type': 'diff', 'name': 'Feature Graphic', 'old': old_header, 'new': info['current'].get('header_image', ''), 'geo': geo})
+                if "Скриншоты" in changed_list:
+                    batched_alerts[b_key]['visuals'].append({'type': 'screens', 'screens': info['current'].get('screenshots', []), 'geo': geo})
+                
+                if txt_payload:
+                    batched_alerts[b_key]['texts'][geo] = txt_payload
+
+        # Отправка результатов
+        token = st.secrets.get("TELEGRAM_TOKEN")
+        for (pkg_id, c_id, is_ios), data in batched_alerts.items():
+            os_icon = "🍎" if is_ios else "🤖"
+            summary_msg = f"🔔 ИЗМЕНЕНИЯ (Массовая проверка сайта) {os_icon}\n📦 {pkg_id}\n\n"
+            for geo, clist in data['changes'].items():
+                summary_msg += f"🌍 [{geo.upper()}]: {', '.join(clist)}\n"
+            send_telegram_msg(summary_msg, c_id)
+            
+            # Отправка TXT отчетов
+            if data['texts']:
+                full_report = f"ОТЧЕТ ОБ ИЗМЕНЕНИЯХ\nПриложение: {pkg_id}\n\n"
+                for geo, txt in data['texts'].items():
+                    full_report += f"Локаль: {geo.upper()}\n{'='*40}\n"
+                    full_report += f"--- БЫЛО ---\nНазвание: {txt['old_t']}\nSD/Subtitle: {txt['old_s']}\n\n"
+                    full_report += f"--- СТАЛО ---\nНазвание: {txt['new_t']}\nSD/Subtitle: {txt['new_s']}\n\n"
+                send_telegram_file(full_report, f"report_{pkg_id}.txt", f"📄 Отчет: {pkg_id}", c_id)
+            
+            # Отправка графики
+            for vis in data['visuals']:
+                geo = vis['geo'].upper()
+                if vis['type'] == 'diff':
+                    send_visual_diff(c_id, token, vis['old'], vis['new'], vis['name'], pkg_id, geo)
+                elif vis['type'] == 'screens' and vis['screens']:
+                    media = [{"type": "photo", "media": s, "parse_mode": "HTML", "caption": f"📱 Скриншот {pkg_id} [{geo}]" if idx == 0 else ""} for idx, s in enumerate(vis['screens'][:10])]
+                    requests.post(f"https://api.telegram.org/bot{token}/sendMediaGroup", json={"chat_id": c_id, "media": media})
+            
+            # ИИ-анализ
+            if data['texts']:
+                ai_msg = analyze_batched_changes_with_ai(data['texts'])
+                if ai_msg and "❌" not in ai_msg:
+                    clean_ai = ai_msg.replace('*', '').replace('_', '').replace('#', '').replace('`', '')
+                    send_telegram_msg(f"🤖 Пакетный анализ ({pkg_id}):\n\n{clean_ai}", c_id)
+                    
+                    st.toast(f"⏳ Ожидание 40 секунд для сброса лимитов ИИ ({pkg_id})...")
+                    time.sleep(40)
+                else:
+                    send_telegram_msg(f"⚠️ ИИ вернул ошибку: {ai_msg}", c_id)
         
         save_data(db)
-        st.success(f"Готово. Изменений: {updates_count}")
+        if updates_count > 0:
+            st.success(f"Готово. Изменений: {updates_count}")
+        else:
+            st.info("Изменений не обнаружено.")
         st.rerun()
 
 # --- ФИЛЬТРАЦИЯ И ГРУППИРОВКА ---
@@ -589,7 +667,6 @@ def render_app_groups(app_groups, os_icon):
                             if batched_current:
                                 ai_msg = analyze_current_aso_with_ai(batched_current)
                                 if ai_msg and "❌" not in ai_msg:
-                                    # Сохраняем аудит в первую локаль группы
                                     db[keys[0]]['ai_audit'] = ai_msg
                                     save_data(db)
                                     st.rerun()
@@ -598,7 +675,6 @@ def render_app_groups(app_groups, os_icon):
                             else:
                                 st.error("Нет данных для анализа.")
             
-            # Отображаем сохраненный аудит прямо под кнопками
             if first_info.get('ai_audit'):
                 with st.expander("📊 Сохраненный ИИ-Аудит (Текущая стратегия)"):
                     st.markdown(first_info['ai_audit'])
