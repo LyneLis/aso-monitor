@@ -115,15 +115,8 @@ def fetch_app_data(pkg_id, locale):
                 raise Exception(f"Приложение {pkg_id} не найдено в App Store ({c_code})")
         
         data = res['results'][0]
-        
-        screens = data.get('screenshotUrls', [])
-        if not screens:
-            screens = data.get('ipadScreenshotUrls', [])
-
-        icon_url = data.get('artworkUrl512', data.get('artworkUrl100', ''))
-        if icon_url: 
-            icon_url = icon_url.replace('.webp', '.jpg')
-
+        screens = data.get('screenshotUrls', []) or data.get('ipadScreenshotUrls', [])
+        icon_url = data.get('artworkUrl512', data.get('artworkUrl100', '')).replace('.webp', '.jpg')
         subtitle = data.get('subtitle', '')
         
         try:
@@ -135,20 +128,26 @@ def fetch_app_data(pkg_id, locale):
             response = requests.get(app_url, headers=headers, timeout=15)
             
             if response.status_code == 200:
-                soup = BeautifulSoup(response.text, 'html.parser')
+                html_content = response.text
                 
+                # --- ЛОГИКА "ХИРУРГ": ИЗВЛЕЧЕНИЕ SUBTITLE ИЗ JSON-СТРОКИ ---
                 if not subtitle:
-                    st_tag = soup.select_one('.app-header__subtitle, .product-header__subtitle, h2.typography-product-header-subtitle')
-                    if not st_tag:
-                        header = soup.find('header')
-                        if header: st_tag = header.find('h2')
-                    if st_tag:
-                        subtitle = st_tag.get_text(strip=True)
+                    # Ищем подстроку "subtitle":"..."
+                    sub_match = re.search(r'"subtitle"\s*:\s*"([^"]+)"', html_content)
+                    if sub_match:
+                        raw_subtitle = sub_match.group(1)
+                        # Декодируем unicode-последовательности (\uXXXX)
+                        try:
+                            subtitle = raw_subtitle.encode('utf-8').decode('unicode-escape')
+                        except:
+                            subtitle = raw_subtitle
                 
+                # --- СКРИНШОТЫ (ПРОВЕРЕННАЯ ЛОГИКА 300px) ---
+                soup = BeautifulSoup(html_content, 'html.parser')
                 clean_screens = []
                 all_imgs = soup.find_all('picture')
                 
-                # Шаг 1: Ищем строго по 300px
+                # Попытка 1: Строго 300px
                 for pic in all_imgs:
                     source = pic.find('source', type='image/jpeg') or pic.find('source', type='image/webp')
                     if source and source.has_attr('srcset'):
@@ -162,7 +161,7 @@ def fetch_app_data(pkg_id, locale):
                                 s_jpg = img_url.replace('.webp', '.jpg').replace('w.webp', 'bb.jpg').replace('w.png', 'bb.png')
                                 if s_jpg not in clean_screens: clean_screens.append(s_jpg)
 
-                # Шаг 2: Запасной план (если ничего не нашли, берем всё >= 300px и не квадратное)
+                # Попытка 2: Запасной план (>= 300px и не квадрат)
                 if not clean_screens:
                     for pic in all_imgs:
                         source = pic.find('source', type='image/jpeg') or pic.find('source', type='image/webp')
@@ -181,7 +180,7 @@ def fetch_app_data(pkg_id, locale):
                     screens = clean_screens
 
         except Exception as e:
-            print(f"⚠️ Ошибка BeautifulSoup-парсера: {e}")
+            print(f"⚠️ Ошибка парсера: {e}")
 
         return {
             'title': data.get('trackName', ''),
