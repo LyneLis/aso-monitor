@@ -126,44 +126,61 @@ def fetch_app_data(pkg_id, locale):
 
         subtitle = data.get('subtitle', '')
         
-        # --- НАДЕЖНЫЙ ПАРСИНГ BEAUTIFULSOUP ---
-        if not subtitle or not screens:
-            try:
-                app_url = f"https://apps.apple.com/{c_code.lower()}/app/id{pkg_id}"
-                headers = {
-                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Safari/605.1.15",
-                    "Accept-Language": f"{locale},en-US;q=0.9"
-                }
-                response = requests.get(app_url, headers=headers, timeout=15)
+        # --- УЛУЧШЕННЫЙ ПАРСИНГ BEAUTIFULSOUP ---
+        try:
+            app_url = f"https://apps.apple.com/{c_code.lower()}/app/id{pkg_id}"
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Safari/605.1.15",
+                "Accept-Language": f"{locale},en-US;q=0.9"
+            }
+            response = requests.get(app_url, headers=headers, timeout=15)
+            
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'html.parser')
                 
-                if response.status_code == 200:
-                    soup = BeautifulSoup(response.text, 'html.parser')
-                    
-                    # 1. Ищем сабтайтл
-                    if not subtitle:
-                        subtitle_tag = soup.find('h2', class_=lambda c: c and 'subtitle' in c.lower())
-                        if subtitle_tag:
-                            subtitle = subtitle_tag.get_text(strip=True)
-                    
-                    # 2. Ищем скриншоты
-                    if not screens:
-                        clean_screens = []
-                        picture_tags = soup.find_all('picture')
-                        for pic in picture_tags:
-                            source = pic.find('source', type='image/jpeg') or pic.find('source', type='image/webp')
-                            if source and source.has_attr('srcset'):
-                                img_url = source['srcset'].split()[0]
-                                s_jpg = img_url.replace('.webp', '.jpg').replace('w.webp', 'bb.jpg').replace('w.png', 'bb.png')
-                                
-                                if icon_url and s_jpg.split('/')[-1] == icon_url.split('/')[-1]:
-                                    continue
-                                if s_jpg not in clean_screens and "icon" not in s_jpg.lower():
-                                    clean_screens.append(s_jpg)
+                # 1. Поиск сабтайтла (пробуем разные селекторы)
+                if not subtitle:
+                    st_tag = soup.select_one('h2.app-header__subtitle, h2.product-header__subtitle')
+                    if not st_tag:
+                        st_tag = soup.find('h2', class_=lambda c: c and 'subtitle' in c.lower())
+                    if st_tag:
+                        subtitle = st_tag.get_text(strip=True)
+                
+                # 2. Поиск скриншотов с жесткой фильтрацией иконок
+                clean_screens = []
+                screenshot_section = soup.select_one('section.screenshots, div.l-viewport, div.product-screenshots')
+                target = screenshot_section if screenshot_section else soup
+
+                for pic in target.find_all('picture'):
+                    source = pic.find('source', type='image/jpeg') or pic.find('source', type='image/webp')
+                    if source and source.has_attr('srcset'):
+                        img_url = source['srcset'].split()[0]
+                        s_lower = img_url.lower()
                         
-                        if clean_screens:
-                            screens = clean_screens
-            except Exception as e:
-                print(f"⚠️ Ошибка BeautifulSoup-парсера: {e}")
+                        # Фильтруем иконки по ключевым словам
+                        if any(x in s_lower for x in ['icon', 'logo', 'artwork', 'brand', 'app-icon']):
+                            continue
+                            
+                        # Проверка на квадратность (иконки всегда квадратные, скрины - нет)
+                        res_match = re.search(r'/(\d+)x(\d+)[a-zA-Z]*\.', s_lower)
+                        if res_match:
+                            w, h = int(res_match.group(1)), int(res_match.group(2))
+                            if w == h and w != 0: continue 
+
+                        s_jpg = img_url.replace('.webp', '.jpg').replace('w.webp', 'bb.jpg').replace('w.png', 'bb.png')
+                        
+                        # Исключаем если совпадает с основной иконкой
+                        if icon_url and s_jpg.split('/')[-1] == icon_url.split('/')[-1]:
+                            continue
+
+                        if s_jpg not in clean_screens:
+                            clean_screens.append(s_jpg)
+                
+                if clean_screens:
+                    screens = clean_screens
+
+        except Exception as e:
+            print(f"⚠️ Ошибка парсера: {e}")
         # --------------------------------------
 
         screens = [s.replace('.webp', '.jpg') for s in screens]
