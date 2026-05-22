@@ -31,6 +31,21 @@ Output Format:
 - Action Plan: 3 шага.
 """
 
+CURRENT_ASO_PROMPT = """
+Ты — ведущий ASO-стратег и эксперт по mobile-маркетингу.
+Тебе будут предоставлены ТЕКУЩИЕ текстовые метаданные приложения (Title, Subtitle/Short Description, Full Description) в одной или нескольких локалях. Никаких прошлых данных нет, это аудит состояния на сегодняшний день.
+Твоя задача — провести глубокий реверс-инжиниринг текущей ASO-стратегии конкурента.
+
+ОТВЕЧАЙ СТРОГО НА РУССКОМ ЯЗЫКЕ.
+
+Output Format:
+- 🎯 Summary: краткий вывод о текущем позиционировании.
+- 🔑 Core Keywords: на какие ключевые запросы сделан основной упор (по каждой локали).
+- 💡 Value Proposition: какие главные фичи или боли пользователя они подсвечивают.
+- ⚠️ Weaknesses: возможные слабые места или упущенные возможности в их текстах.
+- 🚀 Action Plan: 3 конкретные идеи, как нам адаптировать нашу стратегию, чтобы обойти их в поиске.
+"""
+
 def analyze_changes_with_ai(old_t, new_t, old_s, new_s, old_d, new_d):
     if not GEMINI_API_KEY:
         return "❌ Ключ Gemini API не найден в секретах Streamlit."
@@ -51,6 +66,17 @@ def analyze_batched_changes_with_ai(batched_data):
         prompt += f"\n🌍 --- ЛОКАЛЬ: {loc.upper()} ---\n"
         prompt += f"БЫЛО:\nTitle: {data['old_t']}\nShort/Subtitle: {data['old_s']}\nFull Desc: {data['old_d']}\n"
         prompt += f"СТАЛО:\nTitle: {data['new_t']}\nShort/Subtitle: {data['new_s']}\nFull Desc: {data['new_d']}\n"
+
+    return run_gemini(prompt)
+
+def analyze_current_aso_with_ai(batched_data):
+    if not GEMINI_API_KEY: return "❌ Ключ Gemini API не найден."
+    
+    prompt = CURRENT_ASO_PROMPT + "\n\nПроанализируй текущую ASO-стратегию конкурента на основе следующих данных:\n"
+    
+    for loc, data in batched_data.items():
+        prompt += f"\n🌍 --- ЛОКАЛЬ: {loc.upper()} ---\n"
+        prompt += f"Title: {data['title']}\nSubtitle/Short Desc: {data['summary']}\nFull Desc: {data['description']}\n"
 
     return run_gemini(prompt)
 
@@ -412,7 +438,6 @@ db = load_data()
 with st.sidebar:
     st.header("👤 Профиль пользователя")
     if users_dict:
-        # Режим просмотра: Показать все или конкретного пользователя
         view_user = st.selectbox("Режим просмотра", options=["Все приложения"] + list(users_dict.keys()))
         view_chat_id = str(users_dict[view_user]).strip() if view_user != "Все приложения" else None
     else:
@@ -494,7 +519,6 @@ android_apps = {}
 ios_apps = {}
 
 for key, info in db.items():
-    # Если выбран конкретный пользователь в сайдбаре - фильтруем
     if view_chat_id and str(info.get('chat_id')).strip() != view_chat_id:
         continue
 
@@ -520,7 +544,6 @@ def render_app_groups(app_groups, os_icon):
         main_icon = first_info['current'].get('icon')
 
         with st.expander(f"{os_icon} | {main_title} ({pkg_id}) | 👤 {owner_name}"):
-            # Контент группы (как в старом коде)
             col_img, col_space, col_btn = st.columns([1, 2, 4])
             with col_img:
                 if main_icon and main_icon != 'nan': st.image(main_icon, width=80)
@@ -538,20 +561,33 @@ def render_app_groups(app_groups, os_icon):
                                 if txt_payload: batched_ai[db[k]['geo']] = txt_payload
                             if upd > 0 and batched_ai:
                                 ai_msg = analyze_batched_changes_with_ai(batched_ai)
-                                send_telegram_msg(f"🤖 Пакетный анализ ({pkg_id}):\n\n{ai_msg}", chat_id)
+                                clean_ai = ai_msg.replace('*', '').replace('_', '').replace('#', '').replace('`', '')
+                                send_telegram_msg(f"🤖 Пакетный анализ ({pkg_id}):\n\n{clean_ai}", chat_id)
                         save_data(db)
                         st.rerun()
                 
                 with col2:
                     if st.button(f"🧠 Текущий ASO обзор", key=f"ai_force_{pkg_id}_{chat_id}"):
-                        batched_current = {db[k]['geo']: {
-                            'old_t': db[k]['current']['title'], 'new_t': db[k]['current']['title'],
-                            'old_s': db[k]['current']['summary'], 'new_s': db[k]['current']['summary'],
-                            'old_d': db[k]['current']['description'], 'new_d': db[k]['current']['description']
-                        } for k in keys}
-                        ai_msg = analyze_batched_changes_with_ai(batched_current)
-                        send_telegram_msg(f"🧠 Обзор ASO ({pkg_id}):\n\n{ai_msg}", chat_id)
-                        st.success("Отправлено в TG")
+                        with st.spinner("ИИ анализирует текущие тексты..."):
+                            batched_current = {}
+                            for k in keys:
+                                inf = db[k]
+                                batched_current[inf['geo']] = {
+                                    'title': inf['current']['title'],
+                                    'summary': inf['current']['summary'],
+                                    'description': inf['current']['description']
+                                }
+                            
+                            if batched_current:
+                                ai_msg = analyze_current_aso_with_ai(batched_current)
+                                if ai_msg and "❌" not in ai_msg:
+                                    st.success("✅ Отчет успешно сгенерирован!")
+                                    with st.expander(f"📊 ASO-аудит: {main_title}", expanded=True):
+                                        st.markdown(ai_msg)
+                                else:
+                                    st.error(f"Ошибка ИИ: {ai_msg}")
+                            else:
+                                st.error("Нет данных для анализа.")
 
             st.markdown("---")
             tabs_loc = st.tabs([GP_LOCALES_RAW.get(db[k]['geo'], db[k]['geo']) for k in keys])
