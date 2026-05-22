@@ -76,3 +76,4 @@ urllib3==2.7.0
 uvicorn==0.46.0
 validators==0.35.0
 websockets==16.0
+beautifulsoup4==4.12.3
