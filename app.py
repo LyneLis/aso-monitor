@@ -9,6 +9,7 @@ from streamlit_gsheets import GSheetsConnection
 from bs4 import BeautifulSoup
 import re
 import time
+import codecs
 
 st.set_page_config(page_title="ASO Monitor PRO", layout="wide")
 
@@ -105,7 +106,7 @@ def run_gemini(prompt):
             error_str = str(e)
             last_error = error_str
             
-            # 🛑 УМНЫЙ ОБХОД ЛИМИТОВ: Если поймали ошибку 429, просто ждем 35 сек и повторяем
+            # 🛑 УМНЫЙ ОБХОД ЛИМИТОВ: Если поймали ошибку 429, ждем 35 сек и повторяем
             if "429" in error_str or "Quota" in error_str:
                 time.sleep(35) 
                 try:
@@ -114,7 +115,7 @@ def run_gemini(prompt):
                         return response.text
                 except Exception as retry_e:
                     last_error = str(retry_e)
-                    continue # Если и после паузы ошибка, пробуем следующую модель
+                    continue
             else:
                 continue 
             
@@ -213,7 +214,8 @@ def fetch_app_data(pkg_id, locale):
             response = requests.get(app_url, headers=headers, timeout=15)
             
             if response.status_code == 200:
-                html_content = response.content.decode('utf-8', errors='replace')
+                response.encoding = 'utf-8' 
+                html_content = response.text
                 soup = BeautifulSoup(html_content, 'html.parser')
                 
                 if not subtitle:
@@ -222,12 +224,11 @@ def fetch_app_data(pkg_id, locale):
                         subtitle = p_tag.get_text(strip=True)
                 
                 if not subtitle:
-                    # 🛑 Улучшенная регулярка для захвата сабтайтлов с внутренними экранированными кавычками
                     sub_match = re.search(r'"subtitle"\s*:\s*"((?:[^"\\]|\\.)*)"', html_content)
                     if sub_match:
                         raw_subtitle = sub_match.group(1)
                         try:
-                            subtitle = json.loads(f'"{raw_subtitle}"')
+                            subtitle = codecs.decode(raw_subtitle, 'unicode_escape')
                         except:
                             subtitle = raw_subtitle
 
@@ -236,6 +237,9 @@ def fetch_app_data(pkg_id, locale):
                         subtitle = subtitle.encode('latin-1').decode('utf-8')
                     except UnicodeEncodeError:
                         pass
+                
+                if subtitle:
+                    subtitle = subtitle.strip('"')
                 
                 clean_screens = []
                 all_imgs = soup.find_all('picture')
@@ -668,7 +672,7 @@ def render_app_groups(app_groups, os_icon):
                     btn_label = "🔄 Обновить ASO-аудит" if saved_audit else "🧠 Текущий ASO обзор"
                     
                     if st.button(btn_label, key=f"ai_force_{pkg_id}_{chat_id}"):
-                        with st.spinner("ИИ анализирует тексты..."):
+                        with st.spinner("ИИ анализирует тексты... (может занять около минуты из-за лимитов)"):
                             batched_current = {}
                             for k in keys:
                                 inf = db[k]
