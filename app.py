@@ -102,8 +102,21 @@ def run_gemini(prompt):
             if response and response.text:
                 return response.text
         except Exception as e:
-            last_error = str(e)
-            continue 
+            error_str = str(e)
+            last_error = error_str
+            
+            # 🛑 УМНЫЙ ОБХОД ЛИМИТОВ: Если поймали ошибку 429, просто ждем 35 сек и повторяем
+            if "429" in error_str or "Quota" in error_str:
+                time.sleep(35) 
+                try:
+                    response = model.generate_content(prompt)
+                    if response and response.text:
+                        return response.text
+                except Exception as retry_e:
+                    last_error = str(retry_e)
+                    continue # Если и после паузы ошибка, пробуем следующую модель
+            else:
+                continue 
             
     return f"❌ Ошибка ИИ-анализа: {last_error}"
 
