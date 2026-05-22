@@ -17,7 +17,7 @@ jobs:
         with:
           python-version: '3.9'
       - name: Install
-        run: pip install google-play-scraper gspread requests pandas google-generativeai
+        run: pip install google-play-scraper gspread requests pandas google-generativeai beautifulsoup4
       - name: Run
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
