@@ -126,7 +126,6 @@ def fetch_app_data(pkg_id, locale):
 
         subtitle = data.get('subtitle', '')
         
-        # --- ОБНОВЛЕННЫЙ ПАРСИНГ С ПРИВЯЗКОЙ К 300px ---
         try:
             app_url = f"https://apps.apple.com/{c_code.lower()}/app/id{pkg_id}"
             headers = {
@@ -138,48 +137,51 @@ def fetch_app_data(pkg_id, locale):
             if response.status_code == 200:
                 soup = BeautifulSoup(response.text, 'html.parser')
                 
-                # 1. Поиск сабтайтла (пробуем вытащить из разных мест)
                 if not subtitle:
                     st_tag = soup.select_one('.app-header__subtitle, .product-header__subtitle, h2.typography-product-header-subtitle')
                     if not st_tag:
-                        # Если через классы не вышло, ищем просто h2 в шапке
                         header = soup.find('header')
-                        if header:
-                            st_tag = header.find('h2')
+                        if header: st_tag = header.find('h2')
                     if st_tag:
                         subtitle = st_tag.get_text(strip=True)
                 
-                # 2. Скриншоты с фильтрацией по 300px
                 clean_screens = []
                 all_imgs = soup.find_all('picture')
                 
+                # Шаг 1: Ищем строго по 300px
                 for pic in all_imgs:
                     source = pic.find('source', type='image/jpeg') or pic.find('source', type='image/webp')
                     if source and source.has_attr('srcset'):
                         img_url = source['srcset'].split()[0]
                         s_lower = img_url.lower()
-                        
-                        # Фильтруем мусор
-                        if any(x in s_lower for x in ['icon', 'logo', 'artwork', 'brand']):
-                            continue
-                            
-                        # Проверка размеров
+                        if any(x in s_lower for x in ['icon', 'logo', 'artwork', 'brand']): continue
                         res_match = re.search(r'/(\d+)x(\d+)', s_lower)
                         if res_match:
                             w, h = int(res_match.group(1)), int(res_match.group(2))
-                            
-                            # ЛОГИКА: Оставляем только те, где одна сторона = 300
-                            # И исключаем квадраты (чтобы не зацепить иконки 300х300)
                             if (w == 300 or h == 300) and w != h:
                                 s_jpg = img_url.replace('.webp', '.jpg').replace('w.webp', 'bb.jpg').replace('w.png', 'bb.png')
-                                if s_jpg not in clean_screens:
-                                    clean_screens.append(s_jpg)
+                                if s_jpg not in clean_screens: clean_screens.append(s_jpg)
+
+                # Шаг 2: Запасной план (если ничего не нашли, берем всё >= 300px и не квадратное)
+                if not clean_screens:
+                    for pic in all_imgs:
+                        source = pic.find('source', type='image/jpeg') or pic.find('source', type='image/webp')
+                        if source and source.has_attr('srcset'):
+                            img_url = source['srcset'].split()[0]
+                            s_lower = img_url.lower()
+                            if any(x in s_lower for x in ['icon', 'logo', 'artwork']): continue
+                            res_match = re.search(r'/(\d+)x(\d+)', s_lower)
+                            if res_match:
+                                w, h = int(res_match.group(1)), int(res_match.group(2))
+                                if w != h and (w >= 300 or h >= 300):
+                                    s_jpg = img_url.replace('.webp', '.jpg').replace('w.webp', 'bb.jpg')
+                                    if s_jpg not in clean_screens: clean_screens.append(s_jpg)
                 
                 if clean_screens:
                     screens = clean_screens
 
         except Exception as e:
-            print(f"⚠️ Ошибка парсера: {e}")
+            print(f"⚠️ Ошибка BeautifulSoup-парсера: {e}")
 
         return {
             'title': data.get('trackName', ''),
@@ -200,7 +202,6 @@ def check_apps():
         worksheet = sh.get_worksheet(0) 
         headers = worksheet.row_values(1)
         all_rows = worksheet.get_all_values() 
-        col_map = {name: i for i, name in enumerate(headers)}
     except Exception as e:
         print(f"❌ Ошибка API Таблиц: {e}"); return
 
@@ -209,7 +210,6 @@ def check_apps():
 
     for i, row_values in enumerate(all_rows[1:], start=2):
         row = {headers[j]: (row_values[j] if j < len(row_values) else "") for j in range(len(headers))}
-        
         p_id = str(row.get('package_id', '')).strip()
         if not p_id or p_id == 'nan': continue
         
@@ -224,7 +224,6 @@ def check_apps():
 
         try:
             res = fetch_app_data(p_id, full_geo)
-            
             old_t = clean_val(row.get('title'))
             old_s = clean_val(row.get('summary'))
             old_d = clean_val(row.get('description'))
@@ -249,7 +248,6 @@ def check_apps():
                 if new_t != old_t: changes.append("Название")
                 if new_s != old_s: changes.append("Subtitle" if is_ios else "SD")
                 if new_d != old_d: changes.append("Описание" if is_ios else "FD")
-                
                 if old_icon and new_icon != old_icon: changes.append("Иконка")
                 if old_header and new_header != old_header: changes.append("Feature Graphic")
                 if new_scr != old_scr: changes.append("Скриншоты")
@@ -261,7 +259,6 @@ def check_apps():
                 if has_owner:
                     user_stats[c_id]['updated'] += 1
                     is_rollback = any(new_t == past.get('title') and new_s == past.get('summary') for past in history[-3:])
-                    
                     b_key = (p_id, c_id, is_ios)
                     if b_key not in batched_alerts:
                         batched_alerts[b_key] = {'changes': {}, 'texts': {}, 'visuals': [], 'is_rollback': False}
@@ -278,9 +275,7 @@ def check_apps():
                         
                     if any(k in ["Название", "SD", "Subtitle", "FD", "Описание"] for k in changes):
                         batched_alerts[b_key]['texts'][full_geo] = {
-                            'old_t': old_t, 'new_t': new_t,
-                            'old_s': old_s, 'new_s': new_s,
-                            'old_d': old_d, 'new_d': new_d
+                            'old_t': old_t, 'new_t': new_t, 'old_s': old_s, 'new_s': new_s, 'old_d': old_d, 'new_d': new_d
                         }
 
                 row['title'], row['summary'], row['description'] = new_t, new_s, new_d
@@ -288,46 +283,33 @@ def check_apps():
                 row['screenshots'] = json.dumps(new_scr, ensure_ascii=False)
                 history.append({"title": old_t, "summary": old_s, "description": old_d, "time": get_minsk_time()})
                 row['history'] = json.dumps(history[-5:], ensure_ascii=False)
-                
-            elif is_table_error:
-                print(f"    🛠 Восстановление данных из-за ошибки в таблице для {p_id}")
-                current_log.append({"time": get_minsk_time(), "status": "🟢 Авто: Исправление ошибки"})
-                row['title'], row['summary'], row['description'] = new_t, new_s, new_d
-                row['icon'], row['header_image'], row['screenshots'] = new_icon, new_header, json.dumps(new_scr, ensure_ascii=False)
-
             else:
                 current_log.append({"time": get_minsk_time(), "status": "🟢 Авто: Без изменений"})
-                if not old_icon and new_icon:
-                    row['icon'], row['header_image'], row['screenshots'] = new_icon, new_header, json.dumps(new_scr, ensure_ascii=False)
 
             row['check_log'] = json.dumps(current_log[-5:], ensure_ascii=False)
-
             new_row_list = [row.get(h, "") for h in headers]
             range_name = f"A{i}:{gspread.utils.rowcol_to_a1(i, len(headers))}"
             worksheet.update(range_name, [new_row_list])
             time.sleep(0.6)
-
         except Exception as e:
             print(f"    ❌ Ошибка {p_id}: {e}")
 
     for (pkg_id, c_id, is_ios), data in batched_alerts.items():
         os_icon = "🍎" if is_ios else "🤖"
         msg_prefix = "🔄 АВТО-ОТКАТ" if data['is_rollback'] else "🔔 ИЗМЕНЕНИЯ"
-        
         summary_msg = f"{msg_prefix} {os_icon}\n📦 {pkg_id}\n\n"
         for geo, changes_list in data['changes'].items():
             summary_msg += f"🌍 [{geo.upper()}]: {', '.join(changes_list)}\n"
         requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": c_id, "text": summary_msg})
         
         if data['texts']:
-            full_report = f"ОТЧЕТ ОБ ИЗМЕНЕНИЯХ\nПриложение: {pkg_id}\nДата: {get_minsk_time()}\n\n"
+            full_report = f"ОТЧЕТ ОБ ИЗМЕНЕНИЯХ\nПриложение: {pkg_id}\n\n"
             for geo, txt in data['texts'].items():
                 full_report += f"Локаль: {geo.upper()}\n{'='*40}\n"
-                full_report += f"--- БЫЛО ---\nНазвание: {txt['old_t']}\nSD/Subtitle: {txt['old_s']}\nFD:\n{txt['old_d']}\n\n"
-                full_report += f"--- СТАЛО ---\nНазвание: {txt['new_t']}\nSD/Subtitle: {txt['new_s']}\nFD:\n{txt['new_d']}\n\n"
-            
+                full_report += f"--- БЫЛО ---\nНазвание: {txt['old_t']}\nSD/Subtitle: {txt['old_s']}\n\n"
+                full_report += f"--- СТАЛО ---\nНазвание: {txt['new_t']}\nSD/Subtitle: {txt['new_s']}\n\n"
             requests.post(f"https://api.telegram.org/bot{TOKEN}/sendDocument", 
-                         data={"chat_id": c_id, "caption": f"📄 Полный отчет: {pkg_id}"}, 
+                         data={"chat_id": c_id, "caption": f"📄 Отчет: {pkg_id}"}, 
                          files={"document": (f"report_{pkg_id}.txt", full_report.encode('utf-8'))})
                          
         for vis in data['visuals']:
@@ -335,35 +317,14 @@ def check_apps():
             if vis['type'] == 'diff':
                 send_visual_diff(c_id, TOKEN, vis['old'], vis['new'], vis['name'], pkg_id, geo)
             elif vis['type'] == 'screens':
-                media = []
-                for idx, scr_url in enumerate(vis['screens'][:10]):
-                    caption = f"📱 <b>ОБНОВЛЕННЫЕ СКРИНШОТЫ</b> {os_icon}\n📦 {pkg_id} [{geo}]" if idx == 0 else ""
-                    media.append({"type": "photo", "media": scr_url, "parse_mode": "HTML", "caption": caption})
-                if media:
-                    resp = requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMediaGroup", json={"chat_id": c_id, "media": media})
-                    if resp.status_code != 200:
-                        requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={
-                            "chat_id": c_id, "text": f"⚠️ Скриншоты [{geo}] изменились, но Telegram не смог их отобразить."
-                        })
+                media = [{"type": "photo", "media": s, "parse_mode": "HTML", "caption": f"📱 Скриншот {pkg_id} [{geo}]" if idx == 0 else ""} 
+                         for idx, s in enumerate(vis['screens'][:10])]
+                if media: requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMediaGroup", json={"chat_id": c_id, "media": media})
                         
         if data['texts']:
-            print(f"🧠 Запуск ИИ для {pkg_id} ({len(data['texts'])} локалей)")
             ai_msg = analyze_batched_changes_with_ai(data['texts'])
-            clean_ai = ai_msg.replace('*', '').replace('_', '').replace('#', '').replace('`', '')
-            full_text = f"🤖 Глобальный ASO-Анализ ({pkg_id}):\n\n{clean_ai}"
-            
-            # Чанкинг сообщений ИИ для бота
-            limit = 4000
-            for chunk_idx in range(0, len(full_text), limit):
-                chunk = full_text[chunk_idx:chunk_idx+limit]
-                requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": c_id, "text": chunk})
-            time.sleep(3)
-
-    for c_id, stats in user_stats.items():
-        if stats['updated'] > 0:
-            report = (f"⚙️ Системный авто-отчет\n⏰ {get_minsk_time()}\n"
-                      f"📦 Проверено: {stats['checked']}\n⚠️ Обновлено: {stats['updated']}")
-            requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": c_id, "text": report})
+            clean_ai = ai_msg.replace('*', '').replace('_', '').replace('#', '')
+            requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": c_id, "text": f"🤖 Анализ:\n\n{clean_ai}"})
 
 if __name__ == "__main__":
     check_apps()
