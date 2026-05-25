@@ -1,0 +1,7 @@
+google-play-scraper
+gspread
+requests
+pandas
+google-generativeai
+beautifulsoup4
+pytest

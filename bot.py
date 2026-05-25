@@ -1,356 +1,172 @@
-import gspread
-from google_play_scraper import app as gp_app
-import os
 import json
-import requests
-import google.generativeai as genai
-from datetime import datetime, timedelta
 import time
-import re
-from bs4 import BeautifulSoup
 
-# Настройки окружения
-TOKEN = os.environ.get("TELEGRAM_TOKEN")
-service_account_info = json.loads(os.environ.get("GCP_SERVICE_ACCOUNT_JSON"))
-SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1jHKbRYt0hJg29RWLIXZ2fL3et_hgzvkhCSxVtTjKV9g/edit"
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+from core import (
+    GeminiClient,
+    Settings,
+    TelegramClient,
+    detect_changes_with_table_error,
+    fetch_app_data,
+    format_changes_report,
+    get_minsk_time,
+    history_entry_from_snapshot,
+    snapshot_from_fetch,
+    snapshot_from_row,
+)
+from core.telegram import BOT_CHUNK_LIMIT
+from sheets import GspreadAppsRepository
 
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY, transport='rest')
+settings = Settings.from_env()
+telegram = TelegramClient(settings, message_limit=BOT_CHUNK_LIMIT)
+gemini = GeminiClient(settings, verbose=True)
 
-ASO_PROMPT = """
-Ты — ведущий ASO-стратег и эксперт по mobile-маркетингу с глубокой экспертизой в анализе данных. Твоя специализация — реверс-инжиниринг стратегий конкурентов.
-Тебе будут предоставлены данные "До" и "После". Проведи анализ изменений и выяви стратегию роста.
-
-ОТВЕЧАЙ СТРОГО НА РУССКОМ ЯЗЫКЕ 
-
-Output Format:
-- Summary: краткий вывод.
-- Keywords Migration: что удалено/добавлено.
-- Strategic Shift: описание.
-- Threat Level: High/Medium/Low.
-- Action Plan: 3 шага.
-"""
-
-def get_minsk_time():
-    return (datetime.utcnow() + timedelta(hours=3)).strftime("%d.%m.%Y %H:%M:%S")
-
-def run_gemini(prompt):
-    if not GEMINI_API_KEY: return "❌ Ключ Gemini API не найден."
-    available_models = []
-    try:
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                available_models.append(m.name.replace('models/', ''))
-    except Exception as e:
-        print(f"⚠️ Не удалось получить список моделей: {e}")
-
-    priority_list = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.5-pro', 'gemini-1.5-pro', 'gemini-pro']
-    models_to_try = [m for m in priority_list if m in available_models]
-    if not models_to_try:
-        models_to_try = available_models[:2] if available_models else priority_list
-
-    last_error = ""
-    for model_name in models_to_try:
-        try:
-            print(f"🤖 Пробую модель: {model_name}...")
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content(prompt)
-            if response and response.text:
-                return response.text
-        except Exception as e:
-            last_error = str(e)
-            continue
-    return f"❌ Ошибка ИИ-анализа: {last_error}"
-
-def analyze_batched_changes_with_ai(batched_data):
-    prompt = ASO_PROMPT + "\n\nВНИМАНИЕ: Конкурент обновил сразу несколько локалей. Проанализируй общую ASO-стратегию этих изменений (какие рынки в фокусе, какие ключевики тестируют):\n"
-    for loc, data in batched_data.items():
-        prompt += f"\n🌍 --- ЛОКАЛЬ: {loc.upper()} ---\n"
-        prompt += f"БЫЛО:\nTitle: {data['old_t']}\nShort/Subtitle: {data['old_s']}\nFull Desc: {data['old_d']}\n"
-        prompt += f"СТАЛО:\nTitle: {data['new_t']}\nShort/Subtitle: {data['new_s']}\nFull Desc: {data['new_d']}\n"
-    return run_gemini(prompt)
-
-def clean_val(val):
-    s_val = str(val).strip()
-    if s_val.lower() in ['nan', 'none', '#n/a', '']:
-        return ""
-    if '#error' in s_val.lower():
-        return None
-    return s_val
-
-def send_visual_diff(chat_id, token, old_url, new_url, name, p_id, geo):
-    if not old_url or not new_url or old_url.lower() == 'nan' or new_url.lower() == 'nan': 
-        return
-    url = f"https://api.telegram.org/bot{token}/sendMediaGroup"
-    media = [
-        {"type": "photo", "media": old_url, "parse_mode": "HTML", "caption": f"🔴 <b>БЫЛО</b> | {name}\n📦 {p_id} [{geo}]"},
-        {"type": "photo", "media": new_url, "parse_mode": "HTML", "caption": f"🟢 <b>СТАЛО</b> | {name}\n📦 {p_id} [{geo}]"}
-    ]
-    try:
-        requests.post(url, json={"chat_id": chat_id, "media": media})
-    except Exception as e:
-        print(f"⚠️ Ошибка отправки медиа-группы: {e}")
-
-def fetch_app_data(pkg_id, locale):
-    if locale == "es-419":
-        l_code, c_code = "es-419", "MX" 
-    elif "-" in locale:
-        l_code = locale 
-        c_code = locale.split("-")[1].upper() 
-    else:
-        l_code, c_code = locale.lower(), locale.upper()
-        
-    if l_code == "iw": l_code = "iw"
-
-    if str(pkg_id).isdigit():
-        apple_lang = locale.replace('-', '_').lower()
-        url = f"https://itunes.apple.com/lookup?id={pkg_id}&country={c_code}&lang={apple_lang}"
-        res = requests.get(url, timeout=10).json()
-        
-        if res.get('resultCount', 0) == 0:
-            url_fallback = f"https://itunes.apple.com/lookup?id={pkg_id}&country={c_code}"
-            res = requests.get(url_fallback, timeout=10).json()
-            if res.get('resultCount', 0) == 0:
-                raise Exception(f"Приложение {pkg_id} не найдено в App Store ({c_code})")
-        
-        data = res['results'][0]
-        screens = data.get('screenshotUrls', []) or data.get('ipadScreenshotUrls', [])
-        icon_url = data.get('artworkUrl512', data.get('artworkUrl100', '')).replace('.webp', '.jpg')
-        subtitle = data.get('subtitle', '')
-        
-        try:
-            app_url = f"https://apps.apple.com/{c_code.lower()}/app/id{pkg_id}"
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept-Language": f"{locale},en-US;q=0.9"
-            }
-            response = requests.get(app_url, headers=headers, timeout=15)
-            
-            if response.status_code == 200:
-                # 🛑 Жестко ставим кодировку, чтобы избежать западноевропейских кракозябр в HTML
-                response.encoding = 'utf-8'
-                html_content = response.text
-                soup = BeautifulSoup(html_content, 'html.parser')
-                
-                if not subtitle:
-                    p_tag = soup.find('p', class_=re.compile(r'^subtitle'))
-                    if p_tag:
-                        subtitle = p_tag.get_text(strip=True)
-                
-                if not subtitle:
-                    # 🛑 Улучшенная регулярка, которая не боится внутренних слэшей и кавычек
-                    sub_match = re.search(r'"subtitle"\s*:\s*"((?:[^"\\]|\\.)*)"', html_content)
-                    if sub_match:
-                        raw_subtitle = sub_match.group(1)
-                        try:
-                            # 🛑 Возвращаем unicode-escape для японских, шведских и русских символов
-                            subtitle = raw_subtitle.encode('utf-8').decode('unicode-escape')
-                        except:
-                            subtitle = raw_subtitle
-                
-                # Финальная чистка от случайных кавычек
-                if subtitle:
-                    subtitle = subtitle.strip('"')
-                
-                clean_screens = []
-                all_imgs = soup.find_all('picture')
-                
-                for pic in all_imgs:
-                    source = pic.find('source', type='image/jpeg') or pic.find('source', type='image/webp')
-                    if source and source.has_attr('srcset'):
-                        img_url = source['srcset'].split()[0]
-                        s_lower = img_url.lower()
-                        if any(x in s_lower for x in ['icon', 'logo', 'artwork', 'brand']): continue
-                        res_match = re.search(r'/(\d+)x(\d+)', s_lower)
-                        if res_match:
-                            w, h = int(res_match.group(1)), int(res_match.group(2))
-                            if (w == 300 or h == 300) and w != h:
-                                s_jpg = img_url.replace('.webp', '.jpg').replace('w.webp', 'bb.jpg').replace('w.png', 'bb.png')
-                                if s_jpg not in clean_screens: clean_screens.append(s_jpg)
-
-                if not clean_screens:
-                    for pic in all_imgs:
-                        source = pic.find('source', type='image/jpeg') or pic.find('source', type='image/webp')
-                        if source and source.has_attr('srcset'):
-                            img_url = source['srcset'].split()[0]
-                            s_lower = img_url.lower()
-                            if any(x in s_lower for x in ['icon', 'logo', 'artwork']): continue
-                            res_match = re.search(r'/(\d+)x(\d+)', s_lower)
-                            if res_match:
-                                w, h = int(res_match.group(1)), int(res_match.group(2))
-                                if w != h and (w >= 300 or h >= 300):
-                                    s_jpg = img_url.replace('.webp', '.jpg').replace('w.webp', 'bb.jpg')
-                                    if s_jpg not in clean_screens: clean_screens.append(s_jpg)
-                
-                if clean_screens:
-                    screens = clean_screens
-
-        except Exception as e:
-            print(f"⚠️ Ошибка парсера: {e}")
-
-        return {
-            'title': data.get('trackName', ''),
-            'summary': subtitle or '', 
-            'description': data.get('description', ''),
-            'icon': icon_url or '', 
-            'headerImage': '',
-            'screenshots': [s.replace('.webp', '.jpg') for s in screens]
-        }
-    else:
-        return gp_app(pkg_id, lang=l_code, country=c_code)
 
 def check_apps():
     print(f"--- СТАРТ ПРОВЕРКИ v3.23 (Интервал 12ч) ({get_minsk_time()}) ---")
+    repo = GspreadAppsRepository(settings)
     try:
-        gc = gspread.service_account_from_dict(service_account_info)
-        sh = gc.open_by_url(SPREADSHEET_URL)
-        worksheet = sh.get_worksheet(0) 
-        headers = worksheet.row_values(1)
-        all_rows = worksheet.get_all_values() 
+        repo.open()
     except Exception as e:
-        print(f"❌ Ошибка API Таблиц: {e}"); return
+        print(f"❌ Ошибка API Таблиц: {e}")
+        return
 
     user_stats = {}
-    batched_alerts = {} 
+    batched_alerts = {}
 
-    for i, row_values in enumerate(all_rows[1:], start=2):
-        row = {headers[j]: (row_values[j] if j < len(row_values) else "") for j in range(len(headers))}
-        p_id = str(row.get('package_id', '')).strip()
-        if not p_id or p_id == 'nan': continue
-        
-        c_id = str(row.get('chat_id', '')).strip()
-        has_owner = bool(c_id and c_id.lower() != 'nan')
+    for row_index, row in repo.iter_rows():
+        p_id = str(row.get("package_id", "")).strip()
+        if not p_id or p_id == "nan":
+            continue
+
+        c_id = str(row.get("chat_id", "")).strip()
+        has_owner = bool(c_id and c_id.lower() != "nan")
 
         if has_owner:
-            user_stats.setdefault(c_id, {'checked': 0, 'updated': 0})
-            user_stats[c_id]['checked'] += 1
+            user_stats.setdefault(c_id, {"checked": 0, "updated": 0})
+            user_stats[c_id]["checked"] += 1
 
-        full_geo = str(row.get('geo', 'us')).strip()
+        full_geo = str(row.get("geo", "us")).strip()
 
         try:
             res = fetch_app_data(p_id, full_geo)
-            old_t = clean_val(row.get('title'))
-            old_s = clean_val(row.get('summary'))
-            old_d = clean_val(row.get('description'))
-            old_icon = clean_val(row.get('icon'))
-            old_header = clean_val(row.get('header_image'))
+            old_scr, history, current_log = GspreadAppsRepository.parse_row_lists(row)
 
-            try: old_scr = json.loads(str(row.get('screenshots', '[]')))
-            except: old_scr = []
-            try: history = json.loads(str(row.get('history', '[]')))
-            except: history = []
-            try: current_log = json.loads(str(row.get('check_log', '[]')))
-            except: current_log = []
-
-            new_t, new_s, new_d = str(res['title']).strip(), str(res['summary']).strip(), str(res['description']).strip()
-            new_icon, new_header, new_scr = str(res['icon']).strip(), str(res.get('headerImage', '')).strip(), res['screenshots']
-
-            is_table_error = (old_t is None or old_s is None or old_d is None)
+            old_snap, is_table_error = snapshot_from_row(
+                row.get("title"),
+                row.get("summary"),
+                row.get("description"),
+                row.get("icon"),
+                row.get("header_image"),
+                old_scr,
+            )
+            new_snap = snapshot_from_fetch(res)
             is_ios = str(p_id).isdigit()
 
-            changes = []
-            if not is_table_error:
-                if new_t != old_t: changes.append("Название")
-                if new_s != old_s: changes.append("Subtitle" if is_ios else "SD")
-                if new_d != old_d: changes.append("Описание" if is_ios else "FD")
-                if old_icon and new_icon != old_icon: changes.append("Иконка")
-                if old_header and new_header != old_header: changes.append("Feature Graphic")
-                if new_scr != old_scr: changes.append("Скриншоты")
+            result = detect_changes_with_table_error(
+                old_snap,
+                new_snap,
+                history,
+                is_table_error,
+                label_style="bot",
+                is_ios=is_ios,
+                history_limit=3,
+            )
 
-            if changes:
+            if result.has_changes:
+                changes = result.changed
                 print(f"    ⚠️ Изменение в {p_id} ({full_geo})")
-                current_log.append({"time": get_minsk_time(), "status": f"🔴 Авто: Изменение ({', '.join(changes)})"})
-                
+                current_log.append({
+                    "time": get_minsk_time(),
+                    "status": f"🔴 Авто: Изменение ({', '.join(changes)})",
+                })
+
                 if has_owner:
-                    user_stats[c_id]['updated'] += 1
-                    is_rollback = any(new_t == past.get('title') and new_s == past.get('summary') for past in history[-3:])
+                    user_stats[c_id]["updated"] += 1
                     b_key = (p_id, c_id, is_ios)
                     if b_key not in batched_alerts:
-                        batched_alerts[b_key] = {'changes': {}, 'texts': {}, 'visuals': [], 'is_rollback': False}
-                    
-                    batched_alerts[b_key]['changes'][full_geo] = changes
-                    if is_rollback: batched_alerts[b_key]['is_rollback'] = True
-                    
-                    if "Иконка" in changes:
-                        batched_alerts[b_key]['visuals'].append({'type': 'diff', 'name': 'Иконка', 'old': old_icon, 'new': new_icon, 'geo': full_geo})
-                    if "Feature Graphic" in changes:
-                        batched_alerts[b_key]['visuals'].append({'type': 'diff', 'name': 'Feature Graphic', 'old': old_header, 'new': new_header, 'geo': full_geo})
-                    if "Скриншоты" in changes and new_scr:
-                        batched_alerts[b_key]['visuals'].append({'type': 'screens', 'screens': new_scr, 'geo': full_geo})
-                        
-                    if any(k in ["Название", "SD", "Subtitle", "FD", "Описание"] for k in changes):
-                        batched_alerts[b_key]['texts'][full_geo] = {
-                            'old_t': old_t, 'new_t': new_t, 'old_s': old_s, 'new_s': new_s, 'old_d': old_d, 'new_d': new_d
-                        }
+                        batched_alerts[b_key] = {"changes": {}, "texts": {}, "visuals": [], "is_rollback": False}
 
-                row['title'], row['summary'], row['description'] = new_t, new_s, new_d
-                row['icon'], row['header_image'] = new_icon, new_header
-                row['screenshots'] = json.dumps(new_scr, ensure_ascii=False)
-                history.append({"title": old_t, "summary": old_s, "description": old_d, "time": get_minsk_time()})
-                row['history'] = json.dumps(history[-5:], ensure_ascii=False)
+                    batched_alerts[b_key]["changes"][full_geo] = changes
+                    if result.is_rollback:
+                        batched_alerts[b_key]["is_rollback"] = True
+
+                    if "Иконка" in changes:
+                        batched_alerts[b_key]["visuals"].append({
+                            "type": "diff",
+                            "name": "Иконка",
+                            "old": old_snap.icon,
+                            "new": new_snap.icon,
+                            "geo": full_geo,
+                        })
+                    if "Feature Graphic" in changes:
+                        batched_alerts[b_key]["visuals"].append({
+                            "type": "diff",
+                            "name": "Feature Graphic",
+                            "old": old_snap.header_image,
+                            "new": new_snap.header_image,
+                            "geo": full_geo,
+                        })
+                    if "Скриншоты" in changes and new_snap.screenshots:
+                        batched_alerts[b_key]["visuals"].append({
+                            "type": "screens",
+                            "screens": new_snap.screenshots,
+                            "geo": full_geo,
+                        })
+
+                    if result.text_payload:
+                        batched_alerts[b_key]["texts"][full_geo] = result.text_payload
+
+                row["title"] = new_snap.title
+                row["summary"] = new_snap.summary
+                row["description"] = new_snap.description
+                row["icon"] = new_snap.icon
+                row["header_image"] = new_snap.header_image
+                row["screenshots"] = json.dumps(new_snap.screenshots, ensure_ascii=False)
+                history.append(history_entry_from_snapshot(old_snap, get_minsk_time()))
+                row["history"] = json.dumps(history[-5:], ensure_ascii=False)
             else:
                 current_log.append({"time": get_minsk_time(), "status": "🟢 Авто: Без изменений"})
 
-            row['check_log'] = json.dumps(current_log[-5:], ensure_ascii=False)
-            new_row_list = [row.get(h, "") for h in headers]
-            range_name = f"A{i}:{gspread.utils.rowcol_to_a1(i, len(headers))}"
-            worksheet.update(range_name, [new_row_list])
+            row["check_log"] = json.dumps(current_log[-5:], ensure_ascii=False)
+            repo.update_row(row_index, row)
             time.sleep(0.6)
         except Exception as e:
             print(f"    ❌ Ошибка {p_id}: {e}")
 
     for (pkg_id, c_id, is_ios), data in batched_alerts.items():
         os_icon = "🍎" if is_ios else "🤖"
-        msg_prefix = "🔄 АВТО-ОТКАТ" if data['is_rollback'] else "🔔 ИЗМЕНЕНИЯ"
+        msg_prefix = "🔄 АВТО-ОТКАТ" if data["is_rollback"] else "🔔 ИЗМЕНЕНИЯ"
         summary_msg = f"{msg_prefix} {os_icon}\n📦 {pkg_id}\n\n"
-        for geo, changes_list in data['changes'].items():
+        for geo, changes_list in data["changes"].items():
             summary_msg += f"🌍 [{geo.upper()}]: {', '.join(changes_list)}\n"
-        requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": c_id, "text": summary_msg})
-        
-        if data['texts']:
-            full_report = f"ОТЧЕТ ОБ ИЗМЕНЕНИЯХ\nПриложение: {pkg_id}\n\n"
-            for geo, txt in data['texts'].items():
-                full_report += f"Локаль: {geo.upper()}\n{'='*40}\n"
-                # 🛑 ВОТ ТУТ ВОЗВРАЩЕНО ПОЛНОЕ ОПИСАНИЕ (FD) В TXT ФАЙЛ
-                full_report += f"--- БЫЛО ---\nНазвание: {txt['old_t']}\nSD/Subtitle: {txt['old_s']}\nFD:\n{txt['old_d']}\n\n"
-                full_report += f"--- СТАЛО ---\nНазвание: {txt['new_t']}\nSD/Subtitle: {txt['new_s']}\nFD:\n{txt['new_d']}\n\n"
-            requests.post(f"https://api.telegram.org/bot{TOKEN}/sendDocument", 
-                         data={"chat_id": c_id, "caption": f"📄 Отчет: {pkg_id}"}, 
-                         files={"document": (f"report_{pkg_id}.txt", full_report.encode('utf-8'))})
-                         
-        for vis in data['visuals']:
-            geo = vis['geo'].upper()
-            if vis['type'] == 'diff':
-                send_visual_diff(c_id, TOKEN, vis['old'], vis['new'], vis['name'], pkg_id, geo)
-            elif vis['type'] == 'screens':
-                media = [{"type": "photo", "media": s, "parse_mode": "HTML", "caption": f"📱 Скриншот {pkg_id} [{geo}]" if idx == 0 else ""} 
-                         for idx, s in enumerate(vis['screens'][:10])]
-                if media: requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMediaGroup", json={"chat_id": c_id, "media": media})
-                        
-        if data['texts']:
+        telegram.send_message(summary_msg, c_id)
+
+        if data["texts"]:
+            full_report = format_changes_report(pkg_id, data["texts"])
+            telegram.send_document(full_report, f"report_{pkg_id}.txt", f"📄 Отчет: {pkg_id}", c_id)
+
+        for vis in data["visuals"]:
+            geo = vis["geo"].upper()
+            if vis["type"] == "diff":
+                telegram.send_visual_diff(c_id, vis["old"], vis["new"], vis["name"], pkg_id, geo)
+            elif vis["type"] == "screens":
+                telegram.send_screenshots(c_id, vis["screens"], pkg_id, geo)
+
+        if data["texts"]:
             print(f"🧠 Запуск ИИ для {pkg_id}...")
             try:
-                ai_msg = analyze_batched_changes_with_ai(data['texts'])
-                if ai_msg and "❌" not in ai_msg:
-                    clean_ai = ai_msg.replace('*', '').replace('_', '').replace('#', '').replace('`', '')
-                    print(f"✅ Анализ получен, отправляю в TG (с разбивкой)...")
-                    
-                    # 🛑 УМНАЯ ОТПРАВКА БЕЗ ОБРЕЗАНИЯ ТЕКСТА
-                    full_text = f"🤖 Анализ:\n\n{clean_ai}"
-                    limit = 3900
-                    for chunk_start in range(0, len(full_text), limit):
-                        chunk = full_text[chunk_start:chunk_start+limit]
-                        requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": c_id, "text": chunk})
-                        time.sleep(1) # Защита от спам-фильтра Telegram
+                ai_msg = gemini.analyze_batched_changes(data["texts"])
+                if not gemini.is_error_response(ai_msg):
+                    print("✅ Анализ получен, отправляю в TG (с разбивкой)...")
+                    telegram.send_ai_analysis(c_id, ai_msg)
                 else:
                     print(f"⚠️ ИИ вернул ошибку или пустой ответ: {ai_msg}")
             except Exception as ai_err:
                 print(f"❌ Критическая ошибка при работе с ИИ: {ai_err}")
 
-            # 🛑 ПАУЗА 45 СЕК ДЛЯ ОБХОДА ЛИМИТА GEMINI (15 запросов в минуту)
-            print(f"⏳ Ожидание 45 секунд для сброса лимитов ИИ...")
+            print("⏳ Ожидание 45 секунд для сброса лимитов ИИ...")
             time.sleep(45)
+
 
 if __name__ == "__main__":
     check_apps()

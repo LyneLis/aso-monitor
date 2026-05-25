@@ -1,0 +1,73 @@
+from typing import Any, Dict, Optional
+
+import pandas as pd
+
+from sheets.serialization import storage_key, tracked_info_from_row, tracked_info_to_apps_row
+
+
+class StreamlitAppsRepository:
+    def __init__(self, connection: Any, available: bool):
+        self._conn = connection
+        self.available = available
+
+    @classmethod
+    def connect(cls) -> "StreamlitAppsRepository":
+        import streamlit as st
+        from streamlit_gsheets import GSheetsConnection
+
+        try:
+            conn = st.connection("gsheets", type=GSheetsConnection)
+            return cls(conn, True)
+        except Exception as e:
+            st.error(f"Ошибка подключения: {e}")
+            return cls(None, False)
+
+    def load_users(self) -> Dict[str, Any]:
+        if not self.available:
+            return {}
+        try:
+            df = self._conn.read(worksheet="users", ttl=0)
+            return dict(zip(df["name"], df["chat_id"]))
+        except Exception:
+            return {}
+
+    def load_apps(self) -> Dict[str, Dict[str, Any]]:
+        if not self.available:
+            return {}
+        try:
+            df = self._conn.read(worksheet="apps", ttl=0)
+            if df is None or df.empty:
+                return {}
+            data = {}
+            for _, row in df.iterrows():
+                info = tracked_info_from_row(
+                    row.get("package_id"),
+                    row.get("geo"),
+                    row.get("chat_id"),
+                    title=row.get("title"),
+                    summary=row.get("summary"),
+                    description=row.get("description"),
+                    icon=row.get("icon"),
+                    header_image=row.get("header_image"),
+                    screenshots=row.get("screenshots"),
+                    history=row.get("history"),
+                    check_log=row.get("check_log"),
+                    ai_audit=row.get("ai_audit"),
+                    use_pandas_na=True,
+                )
+                if info:
+                    key = info.pop("_storage_key", storage_key(info))
+                    data[key] = info
+            return data
+        except Exception:
+            return {}
+
+    def save_apps(self, data: Dict[str, Dict[str, Any]]) -> bool:
+        if not self.available:
+            return False
+        try:
+            rows = [tracked_info_to_apps_row(info) for info in data.values()]
+            self._conn.update(worksheet="apps", data=pd.DataFrame(rows))
+            return True
+        except Exception:
+            return False
