@@ -14,7 +14,6 @@ class Settings:
     telegram_token: Optional[str] = None
     spreadsheet_url: Optional[str] = None
     gcp_service_account_json: Optional[str] = None
-    database_url: Optional[str] = None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -23,7 +22,6 @@ class Settings:
             telegram_token=os.environ.get("TELEGRAM_TOKEN"),
             spreadsheet_url=os.environ.get("SPREADSHEET_URL") or DEFAULT_SPREADSHEET_URL,
             gcp_service_account_json=os.environ.get("GCP_SERVICE_ACCOUNT_JSON"),
-            database_url=os.environ.get("DATABASE_URL"),
         )
 
     @classmethod
@@ -38,5 +36,4 @@ class Settings:
             gemini_api_key=secret_get("GEMINI_API_KEY"),
             telegram_token=secret_get("TELEGRAM_TOKEN"),
             spreadsheet_url=secret_get("SPREADSHEET_URL") or DEFAULT_SPREADSHEET_URL,
-            database_url=secret_get("DATABASE_URL"),
         )
