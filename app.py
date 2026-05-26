@@ -15,6 +15,7 @@ from core import (
     get_minsk_time,
 )
 from core.audit_state import group_ai_audit, set_group_ai_audit
+from core.display import app_label_from_group, publisher_from_fetch
 from core.site_checks import run_site_check_for_item
 from sheets import StreamlitAppsRepository
 
@@ -76,6 +77,7 @@ def current_dict_from_fetch_result(result):
         "title": result["title"],
         "summary": result["summary"],
         "description": result["description"],
+        "publisher": publisher_from_fetch(result),
         "icon": result.get("icon", ""),
         "header_image": result.get("headerImage", ""),
         "screenshots": result.get("screenshots", []),
@@ -364,7 +366,16 @@ def repo_load_error_message(repository, load_errors):
     return getattr(repository, "last_error", "") or "Неизвестная ошибка"
 
 
-def send_single_locale_alert(info, changed, outcome, *, skip_ai=False):
+def group_keys_for_info(info):
+    return [
+        key
+        for key, candidate in db.items()
+        if candidate.get("package_id") == info.get("package_id")
+        and str(candidate.get("chat_id", "")).strip() == str(info.get("chat_id", "")).strip()
+    ]
+
+
+def send_single_locale_alert(info, changed, outcome, *, app_display_name=None, skip_ai=False):
     if not outcome or not outcome.result.has_changes:
         return
 
@@ -373,9 +384,10 @@ def send_single_locale_alert(info, changed, outcome, *, skip_ai=False):
     old_snap = outcome.old_snapshot
     c_id = info["chat_id"]
     os_icon = "🍎" if str(info["package_id"]).isdigit() else "🤖"
+    display_name = app_display_name or app_label_from_group(db, group_keys_for_info(info), info["package_id"])
     msg_prefix = "🔄 ОТКАТ (A/B ТЕСТ)" if result.is_rollback else "⚠️ ИЗМЕНЕНИЕ"
     alert_msg = (
-        f"{msg_prefix} {os_icon} [{info['geo'].upper()}]\n📦 {new_snap.title}\n"
+        f"{msg_prefix} {os_icon} [{info['geo'].upper()}]\n📦 {display_name}\n"
         f"Изменено: {', '.join(changed)}"
     )
     if result.is_rollback:
@@ -384,7 +396,7 @@ def send_single_locale_alert(info, changed, outcome, *, skip_ai=False):
 
     if result.text_payload:
         report_content = format_single_locale_report(
-            info["package_id"],
+            display_name,
             info["geo"],
             old_snap,
             new_snap,
@@ -568,8 +580,9 @@ if st.button(
             if latest_log_status(info).startswith("❌"):
                 errors_count += 1
             progress.progress(idx / total_checks, text=f"Проверено локалей: {idx}/{total_checks}")
-            
+
             if u > 0 and outcome:
+                app_display_name = app_label_from_group(db, group_keys_for_info(info), info["package_id"])
                 add_changed_locale_to_batch(
                     batched_alerts,
                     info['package_id'],
@@ -580,6 +593,7 @@ if st.button(
                     changed_list,
                     txt_payload,
                     is_rollback=outcome.result.is_rollback,
+                    app_display_name=app_display_name,
                 )
 
         progress.empty()
@@ -595,33 +609,34 @@ if st.button(
             for alert_index, ((pkg_id, c_id, is_ios), data) in enumerate(batched_alerts.items(), start=1):
                 alert_status.info(f"Отправка уведомлений {alert_index}/{total_alerts}: {pkg_id}")
                 os_icon = "🍎" if is_ios else "🤖"
-                summary_msg = f"🔔 ИЗМЕНЕНИЯ (Массовая проверка сайта) {os_icon}\n📦 {pkg_id}\n\n"
+                app_display_name = data.get("app_display_name") or pkg_id
+                summary_msg = f"🔔 ИЗМЕНЕНИЯ (Массовая проверка сайта) {os_icon}\n📦 {app_display_name}\n\n"
                 for geo, clist in data['changes'].items():
                     summary_msg += f"🌍 [{geo.upper()}]: {', '.join(clist)}\n"
                 telegram.send_message(summary_msg, c_id, chunk_sleep=1)
 
                 if data['texts']:
-                    full_report = format_changes_report(pkg_id, data['texts'])
-                    telegram.send_document(full_report, f"report_{pkg_id}.txt", f"📄 Отчет: {pkg_id}", c_id)
+                    full_report = format_changes_report(app_display_name, data['texts'])
+                    telegram.send_document(full_report, f"report_{pkg_id}.txt", f"📄 Отчет: {app_display_name}", c_id)
                     time.sleep(1)
 
                 for vis in data['visuals']:
                     geo = vis['geo'].upper()
                     if vis['type'] == 'diff':
-                        telegram.send_visual_diff(c_id, vis['old'], vis['new'], vis['name'], pkg_id, geo)
+                        telegram.send_visual_diff(c_id, vis['old'], vis['new'], vis['name'], app_display_name, geo)
                         time.sleep(1.5)
                     elif vis['type'] == 'screens' and vis['screens']:
-                        telegram.send_screenshots(c_id, vis['screens'], pkg_id, geo)
+                        telegram.send_screenshots(c_id, vis['screens'], app_display_name, geo)
                         time.sleep(2)
 
                 if data['texts']:
                     ai_msg = gemini.analyze_batched_changes(data['texts'])
                     if not gemini.is_error_response(ai_msg):
                         telegram.send_message(
-                            f"🤖 Пакетный анализ ({pkg_id}):\n\n{clean_ai_for_telegram(ai_msg)}",
+                            f"🤖 Пакетный анализ ({app_display_name}):\n\n{clean_ai_for_telegram(ai_msg)}",
                             c_id,
                         )
-                        st.toast(f"⏳ Ожидание 40 секунд для сброса лимитов ИИ ({pkg_id})...")
+                        st.toast(f"⏳ Ожидание 40 секунд для сброса лимитов ИИ ({app_display_name})...")
                         time.sleep(40)
                     else:
                         telegram.send_message(f"⚠️ ИИ вернул ошибку: {ai_msg}", c_id)
@@ -724,8 +739,9 @@ def render_app_groups(app_groups, os_icon):
                             if upd > 0 and batched_ai:
                                 st.info("Готовлю пакетный AI-разбор")
                                 ai_msg = gemini.analyze_batched_changes(batched_ai)
+                                app_display_name = app_label_from_group(db, keys, pkg_id)
                                 telegram.send_message(
-                                    f"🤖 Пакетный анализ ({pkg_id}):\n\n{clean_ai_for_telegram(ai_msg)}",
+                                    f"🤖 Пакетный анализ ({app_display_name}):\n\n{clean_ai_for_telegram(ai_msg)}",
                                     chat_id,
                                 )
                             if errors:
@@ -790,7 +806,12 @@ def render_app_groups(app_groups, os_icon):
                             u, changed, _, outcome = run_site_check_for_item(info, item_key=k)
                             if save_apps_or_show_error(db, updated_keys={k}):
                                 if u:
-                                    send_single_locale_alert(info, changed, outcome)
+                                    send_single_locale_alert(
+                                        info,
+                                        changed,
+                                        outcome,
+                                        app_display_name=app_label_from_group(db, group_keys_for_info(info), info["package_id"]),
+                                    )
                                 if latest_log_status(info).startswith("❌"):
                                     set_flash("warning", f"{info['geo'].upper()}: проверка завершилась с ошибкой.")
                                 elif u:

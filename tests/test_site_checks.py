@@ -9,6 +9,7 @@ def make_info():
             "title": "Old title",
             "summary": "Summary",
             "description": "Description",
+            "developer": "Test Publisher",
             "icon": "",
             "header_image": "",
             "screenshots": [],
@@ -28,6 +29,7 @@ def test_run_site_check_for_item_updates_current_history_and_log():
             "title": "New title",
             "summary": "Summary",
             "description": "Description",
+            "developer": "Test Publisher",
             "icon": "",
             "headerImage": "",
             "screenshots": [],
@@ -40,6 +42,7 @@ def test_run_site_check_for_item_updates_current_history_and_log():
     assert text_payload["old_t"] == "Old title"
     assert outcome.new_snapshot.title == "New title"
     assert info["current"]["title"] == "New title"
+    assert info["current"]["publisher"] == "Test Publisher"
     assert info["history"][0]["title"] == "Old title"
     assert "Изменение" in info["check_log"][-1]["status"]
 

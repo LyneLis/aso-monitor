@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from core.compare import (
@@ -16,6 +16,7 @@ class ItemCheckOutcome:
     old_snapshot: AppSnapshot
     new_snapshot: AppSnapshot
     result: ChangeResult
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def updates(self) -> int:
@@ -70,6 +71,7 @@ def check_item_snapshots(
         old_snapshot=old_snapshot,
         new_snapshot=new_snapshot,
         result=result,
+        metadata=fetched,
     )
 
 
@@ -84,13 +86,22 @@ def add_changed_locale_to_batch(
     text_payload: Optional[Dict[str, str]] = None,
     *,
     is_rollback: bool = False,
+    app_display_name: Optional[str] = None,
 ) -> None:
     is_ios = str(package_id).isdigit()
     batch_key = (package_id, chat_id, is_ios)
     if batch_key not in batched_alerts:
-        batched_alerts[batch_key] = {"changes": {}, "texts": {}, "visuals": [], "is_rollback": False}
+        batched_alerts[batch_key] = {
+            "changes": {},
+            "texts": {},
+            "visuals": [],
+            "is_rollback": False,
+            "app_display_name": app_display_name or package_id,
+        }
 
     batch = batched_alerts[batch_key]
+    if app_display_name:
+        batch["app_display_name"] = app_display_name
     batch["changes"][geo] = changed
     if is_rollback:
         batch["is_rollback"] = True

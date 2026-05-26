@@ -73,6 +73,7 @@ class StreamlitAppsRepository:
                 title=row.get("title"),
                 summary=row.get("summary"),
                 description=row.get("description"),
+                publisher=row.get("publisher"),
                 icon=row.get("icon"),
                 header_image=row.get("header_image"),
                 screenshots=row.get("screenshots"),

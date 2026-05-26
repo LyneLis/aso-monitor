@@ -13,6 +13,7 @@ from core import (
     snapshot_from_row,
 )
 from core.telegram import BOT_CHUNK_LIMIT
+from core.display import app_label_from_records, publisher_from_fetch
 from sheets import GspreadAppsRepository
 from sheets.serialization import parse_json_list
 
@@ -21,13 +22,20 @@ telegram = TelegramClient(settings, message_limit=BOT_CHUNK_LIMIT)
 gemini = GeminiClient(settings, verbose=True)
 
 
-def write_snapshot_to_row(row, snap):
+def write_metadata_to_row(row, metadata):
+    publisher = publisher_from_fetch(metadata or {})
+    if publisher:
+        row["publisher"] = publisher
+
+
+def write_snapshot_to_row(row, snap, metadata=None):
     row["title"] = snap.title
     row["summary"] = snap.summary
     row["description"] = snap.description
     row["icon"] = snap.icon
     row["header_image"] = snap.header_image
     row["screenshots"] = json.dumps(snap.screenshots, ensure_ascii=False)
+    write_metadata_to_row(row, metadata)
 
 
 def append_check_log(row, status, **extra):
@@ -58,8 +66,16 @@ def check_apps(fetcher=None):
 
     user_stats = {}
     batched_alerts = {}
+    rows = list(repo.iter_rows())
+    group_records = {}
 
-    for row_index, row in repo.iter_rows():
+    for _, row in rows:
+        p_id = str(row.get("package_id", "")).strip()
+        c_id = str(row.get("chat_id", "")).strip()
+        if p_id and p_id != "nan":
+            group_records.setdefault((p_id, c_id), []).append(row)
+
+    for row_index, row in rows:
         p_id = str(row.get("package_id", "")).strip()
         if not p_id or p_id == "nan":
             continue
@@ -99,6 +115,7 @@ def check_apps(fetcher=None):
             )
             new_snap = outcome.new_snapshot
             result = outcome.result
+            write_metadata_to_row(row, outcome.metadata)
 
             if result.has_changes:
                 changes = result.changed
@@ -108,8 +125,13 @@ def check_apps(fetcher=None):
                     "status": f"🔴 Авто: Изменение ({', '.join(changes)})",
                 })
 
+                write_snapshot_to_row(row, new_snap, outcome.metadata)
+                history.append(history_entry_from_snapshot(old_snap, get_minsk_time()))
+                row["history"] = json.dumps(history[-5:], ensure_ascii=False)
+
                 if has_owner:
                     user_stats[c_id]["updated"] += 1
+                    app_display_name = app_label_from_records(group_records.get((p_id, c_id), [row]), p_id)
                     add_changed_locale_to_batch(
                         batched_alerts,
                         p_id,
@@ -120,14 +142,11 @@ def check_apps(fetcher=None):
                         changes,
                         result.text_payload,
                         is_rollback=result.is_rollback,
+                        app_display_name=app_display_name,
                     )
-
-                write_snapshot_to_row(row, new_snap)
-                history.append(history_entry_from_snapshot(old_snap, get_minsk_time()))
-                row["history"] = json.dumps(history[-5:], ensure_ascii=False)
             elif result.is_table_error:
                 current_log.append({"time": get_minsk_time(), "status": "🟢 Авто: Исправление ошибки"})
-                write_snapshot_to_row(row, new_snap)
+                write_snapshot_to_row(row, new_snap, outcome.metadata)
             else:
                 current_log.append({"time": get_minsk_time(), "status": "🟢 Авто: Без изменений"})
 
@@ -141,24 +160,25 @@ def check_apps(fetcher=None):
     for (pkg_id, c_id, is_ios), data in batched_alerts.items():
         os_icon = "🍎" if is_ios else "🤖"
         msg_prefix = "🔄 АВТО-ОТКАТ" if data["is_rollback"] else "🔔 ИЗМЕНЕНИЯ"
-        summary_msg = f"{msg_prefix} {os_icon}\n📦 {pkg_id}\n\n"
+        app_display_name = data.get("app_display_name") or pkg_id
+        summary_msg = f"{msg_prefix} {os_icon}\n📦 {app_display_name}\n\n"
         for geo, changes_list in data["changes"].items():
             summary_msg += f"🌍 [{geo.upper()}]: {', '.join(changes_list)}\n"
         telegram.send_message(summary_msg, c_id)
 
         if data["texts"]:
-            full_report = format_changes_report(pkg_id, data["texts"])
-            telegram.send_document(full_report, f"report_{pkg_id}.txt", f"📄 Отчет: {pkg_id}", c_id)
+            full_report = format_changes_report(app_display_name, data["texts"])
+            telegram.send_document(full_report, f"report_{pkg_id}.txt", f"📄 Отчет: {app_display_name}", c_id)
 
         for vis in data["visuals"]:
             geo = vis["geo"].upper()
             if vis["type"] == "diff":
-                telegram.send_visual_diff(c_id, vis["old"], vis["new"], vis["name"], pkg_id, geo)
+                telegram.send_visual_diff(c_id, vis["old"], vis["new"], vis["name"], app_display_name, geo)
             elif vis["type"] == "screens":
-                telegram.send_screenshots(c_id, vis["screens"], pkg_id, geo)
+                telegram.send_screenshots(c_id, vis["screens"], app_display_name, geo)
 
         if data["texts"]:
-            print(f"🧠 Запуск ИИ для {pkg_id}...")
+            print(f"🧠 Запуск ИИ для {app_display_name}...")
             try:
                 ai_msg = gemini.analyze_batched_changes(data["texts"])
                 if not gemini.is_error_response(ai_msg):

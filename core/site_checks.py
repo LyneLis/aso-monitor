@@ -1,6 +1,7 @@
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from core.compare import current_dict_from_snapshot, fill_missing_assets, snapshot_from_current
+from core.display import apply_current_metadata
 from core.monitoring import ItemCheckOutcome, check_item_snapshots
 from core.time_utils import get_minsk_time
 
@@ -39,13 +40,16 @@ def run_site_check_for_item(
 
             info.setdefault("history", []).append(info["current"])
             info["current"] = current_dict_from_snapshot(new_snap)
+            apply_current_metadata(info["current"], outcome.metadata)
             log_entry["status"] = f"🔴 Изменение ({', '.join(changed)})"
 
         elif result.is_table_error:
             info["current"] = current_dict_from_snapshot(new_snap)
+            apply_current_metadata(info["current"], outcome.metadata)
             log_entry["status"] = "🟢 Исправление ошибки"
         else:
             fill_missing_assets(info["current"], new_snap)
+            apply_current_metadata(info["current"], outcome.metadata)
 
         info.setdefault("check_log", []).append(log_entry)
         info["check_log"] = info["check_log"][-5:]

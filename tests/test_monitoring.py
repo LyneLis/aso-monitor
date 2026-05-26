@@ -143,3 +143,20 @@ def test_add_changed_locale_to_batch_skips_empty_screenshot_visuals():
     )
 
     assert batched[("com.test.app", "123", False)]["visuals"] == []
+
+
+def test_add_changed_locale_to_batch_stores_display_name():
+    batched = {}
+
+    add_changed_locale_to_batch(
+        batched,
+        "com.test.app",
+        "123",
+        "en-US",
+        AppSnapshot(),
+        AppSnapshot(title="New"),
+        ["Title"],
+        app_display_name="English Title (Studio)",
+    )
+
+    assert batched[("com.test.app", "123", False)]["app_display_name"] == "English Title (Studio)"

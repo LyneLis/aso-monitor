@@ -34,6 +34,7 @@ def test_fetch_ios_app_data_uses_web_locale_for_subtitle(monkeypatch):
                     "results": [
                         {
                             "trackName": "Test App",
+                            "artistName": "Test Publisher",
                             "description": "Description",
                             "subtitle": "English subtitle from lookup",
                             "artworkUrl100": "https://example.com/icon.webp",
@@ -49,6 +50,7 @@ def test_fetch_ios_app_data_uses_web_locale_for_subtitle(monkeypatch):
     result = _fetch_ios_app_data("123456789", "fr-CA", "fr-CA", "CA")
 
     assert result["summary"] == "Sous-titre français"
+    assert result["publisher"] == "Test Publisher"
     assert result["summary"] != "English subtitle from lookup"
     assert calls[1][0] == "https://apps.apple.com/ca/app/id123456789?l=fr-CA"
     assert calls[1][1]["headers"]["Accept-Language"].startswith("fr-CA")

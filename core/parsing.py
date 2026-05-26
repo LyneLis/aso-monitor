@@ -151,6 +151,7 @@ def _fetch_ios_app_data(pkg_id: str, locale: str, l_code: str, c_code: str) -> d
         "summary_unavailable": subtitle_unavailable,
         "screenshots_unavailable": screenshots_unavailable,
         "description": data.get("description", ""),
+        "publisher": data.get("artistName") or data.get("sellerName", ""),
         "icon": icon_url or "",
         "headerImage": "",
         "screenshots": [s.replace(".webp", ".jpg") for s in screens],
