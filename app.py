@@ -28,6 +28,56 @@ repo = StreamlitAppsRepository.connect()
 users_dict = repo.load_users()
 
 
+def owner_name_for(chat_id):
+    return next((name for name, cid in users_dict.items() if str(cid) == str(chat_id)), "Неизвестно")
+
+
+def group_matches_search(pkg_id, chat_id, keys, query):
+    if not query:
+        return True
+    owner_name = owner_name_for(chat_id)
+    values = [str(pkg_id), str(chat_id), owner_name]
+    for key in keys:
+        info = db[key]
+        current = info.get("current", {})
+        values.extend([
+            info.get("geo", ""),
+            current.get("title", ""),
+            current.get("summary", ""),
+        ])
+    haystack = " ".join(str(value).lower() for value in values)
+    return query.lower() in haystack
+
+
+def filter_app_groups(app_groups, query):
+    return {
+        group_key: keys
+        for group_key, keys in app_groups.items()
+        if group_matches_search(group_key[0], group_key[1], keys, query)
+    }
+
+
+def latest_log_label(info):
+    logs = info.get("check_log") or []
+    if not logs:
+        return "Проверок еще не было"
+    last = logs[-1]
+    return f"{last.get('time', '—')} · {last.get('status', '—')}"
+
+
+def render_overview(android_groups, ios_groups):
+    app_count = len(android_groups) + len(ios_groups)
+    locale_count = sum(len(keys) for keys in android_groups.values()) + sum(len(keys) for keys in ios_groups.values())
+    owner_count = len({db[key].get("chat_id") for keys in list(android_groups.values()) + list(ios_groups.values()) for key in keys})
+
+    col_apps, col_locales, col_android, col_ios, col_users = st.columns(5)
+    col_apps.metric("Приложений", app_count)
+    col_locales.metric("Локалей", locale_count)
+    col_android.metric("Android", len(android_groups))
+    col_ios.metric("iOS", len(ios_groups))
+    col_users.metric("Владельцев", owner_count)
+
+
 def save_apps_or_show_error(data):
     if repo.save_apps(data):
         return True
@@ -137,6 +187,13 @@ with st.sidebar:
         view_chat_id = None
 
     st.divider()
+    st.header("🔎 Навигация")
+    search_query = st.text_input(
+        "Поиск",
+        placeholder="Название, Package ID, локаль или владелец",
+    ).strip()
+
+    st.divider()
     st.header("➕ Добавить приложение")
     st.info("Чтобы получать уведомления, сначала напишите боту.")
     st.link_button("➕ Добавить бота", "https://t.me/aso_omg_bot", use_container_width=True)
@@ -150,7 +207,14 @@ with st.sidebar:
     else:
         add_for_user = "Выбрать..."
 
-    if st.button("Добавить в мониторинг", type="primary", use_container_width=True):
+    can_add_app = bool(new_id and new_geos and add_for_user != "Выбрать...")
+    if st.button(
+        "Добавить в мониторинг",
+        type="primary",
+        use_container_width=True,
+        disabled=not can_add_app,
+        help="Выберите приложение, локали и пользователя.",
+    ):
         if new_id and new_geos and add_for_user != "Выбрать...":
             selected_chat_id = str(users_dict[add_for_user]).strip()
             
@@ -179,11 +243,13 @@ with st.sidebar:
                 if save_apps_or_show_error(db):
                     st.success(f"Успешно добавлено локалей: {success_added}")
                     st.rerun()
-        else:
-            st.warning("Заполните ID, локали и пользователя!")
 
 # --- ОСНОВНАЯ ЧАСТЬ ---
-if st.button("🔍 Проверить вообще всё", type="primary"):
+if st.button(
+    "🔍 Проверить все локали",
+    type="primary",
+    help="Проверяет все записи в таблице, независимо от выбранного пользователя и поиска.",
+):
     with st.spinner("Тотальная проверка обновлений... (Может занять время из-за лимитов ИИ)"):
         updates_count = 0
         batched_alerts = {}
@@ -262,6 +328,12 @@ for key, info in db.items():
         if grp not in android_apps: android_apps[grp] = []
         android_apps[grp].append(key)
 
+android_apps = filter_app_groups(android_apps, search_query)
+ios_apps = filter_app_groups(ios_apps, search_query)
+
+render_overview(android_apps, ios_apps)
+st.divider()
+
 tab_android, tab_ios = st.tabs(["🤖 Android (Google Play)", "🍎 iOS (App Store)"])
 
 def render_app_groups(app_groups, os_icon):
@@ -269,21 +341,30 @@ def render_app_groups(app_groups, os_icon):
         st.info("Нет приложений для отображения.")
         return
         
-    for (pkg_id, chat_id), keys in app_groups.items():
-        owner_name = next((name for name, cid in users_dict.items() if str(cid) == str(chat_id)), "Неизвестно")
+    sorted_groups = sorted(
+        app_groups.items(),
+        key=lambda item: (db[item[1][0]]["current"].get("title") or item[0][0]).lower(),
+    )
+    for (pkg_id, chat_id), keys in sorted_groups:
+        owner_name = owner_name_for(chat_id)
         first_info = db[keys[0]]
-        main_title = first_info['current']['title']
+        main_title = first_info['current'].get('title') or pkg_id
         main_icon = first_info['current'].get('icon')
 
-        with st.expander(f"{os_icon} | {main_title} ({pkg_id}) | 👤 {owner_name}"):
+        with st.expander(f"{os_icon} {main_title} · {pkg_id} · {owner_name} · {len(keys)} лок."):
             col_img, col_space, col_btn = st.columns([1, 2, 4])
             with col_img:
                 if main_icon and main_icon != 'nan': st.image(main_icon, width=80)
+                st.caption(f"{len(keys)} локалей")
             
             with col_btn:
                 col1, col2 = st.columns(2)
                 with col1:
-                    if st.button(f"🔍 Проверить локали ({len(keys)})", key=f"ch_grp_{pkg_id}_{chat_id}"):
+                    if st.button(
+                        f"Проверить локали ({len(keys)})",
+                        key=f"ch_grp_{pkg_id}_{chat_id}",
+                        use_container_width=True,
+                    ):
                         with st.spinner("Сверка..."):
                             upd = 0
                             batched_ai = {}
@@ -302,9 +383,9 @@ def render_app_groups(app_groups, os_icon):
                 
                 with col2:
                     saved_audit = first_info.get('ai_audit', '')
-                    btn_label = "🔄 Обновить ASO-аудит" if saved_audit else "🧠 Текущий ASO обзор"
+                    btn_label = "Обновить ASO-разбор" if saved_audit else "Текущий ASO разбор"
                     
-                    if st.button(btn_label, key=f"ai_force_{pkg_id}_{chat_id}"):
+                    if st.button(btn_label, key=f"ai_force_{pkg_id}_{chat_id}", use_container_width=True):
                         with st.spinner("ИИ анализирует тексты... (может занять около минуты из-за лимитов)"):
                             batched_current = {}
                             for k in keys:
@@ -330,7 +411,6 @@ def render_app_groups(app_groups, os_icon):
                 with st.expander("📊 Сохраненный ИИ-Аудит (Текущая стратегия)"):
                     st.markdown(first_info['ai_audit'])
 
-            st.markdown("---")
             tabs_loc = st.tabs([GP_LOCALES_RAW.get(db[k]['geo'], db[k]['geo']) for k in keys])
             for i, k in enumerate(keys):
                 with tabs_loc[i]:
@@ -340,15 +420,32 @@ def render_app_groups(app_groups, os_icon):
                         if info['current'].get('icon'): st.image(info['current']['icon'], width=70)
                     with c2:
                         st.write(f"**Локаль:** `{info['geo']}`")
-                        if st.button("Проверить", key=f"btn_sng_{k}"):
+                        st.caption(f"Последняя проверка: {latest_log_label(info)}")
+                        title = info['current'].get('title')
+                        summary = info['current'].get('summary')
+                        if title:
+                            st.write(f"**Название:** {title}")
+                        if summary:
+                            st.caption(summary)
+                        if st.button("Проверить локаль", key=f"btn_sng_{k}", use_container_width=True):
                             run_check_for_item(k, info, {}, single_mode=True)
                             if save_apps_or_show_error(db):
                                 st.rerun()
                     with c3:
-                        if st.button("🗑️", key=f"del_{k}"):
-                            del db[k]
-                            if save_apps_or_show_error(db):
+                        confirm_key = f"confirm_del_{k}"
+                        if st.session_state.get(confirm_key):
+                            st.warning("Удалить?")
+                            if st.button("Да", key=f"del_yes_{k}", use_container_width=True):
+                                del db[k]
+                                st.session_state[confirm_key] = False
+                                if save_apps_or_show_error(db):
+                                    st.rerun()
+                            if st.button("Нет", key=f"del_no_{k}", use_container_width=True):
+                                st.session_state[confirm_key] = False
                                 st.rerun()
+                        elif st.button("🗑️", key=f"del_{k}", help="Удалить локаль из мониторинга"):
+                            st.session_state[confirm_key] = True
+                            st.rerun()
 
 with tab_android:
     render_app_groups(android_apps, "🤖")
