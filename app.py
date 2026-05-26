@@ -28,6 +28,8 @@ telegram = TelegramClient(settings)
 repo = StreamlitAppsRepository.connect()
 users_dict = repo.load_users()
 STALE_CHECK_HOURS = 24
+ADD_APP_PREVIEW_KEY = "add_app_preview"
+DEFAULT_PREVIEW_LOCALE = "en-US"
 
 
 def owner_name_for(chat_id):
@@ -56,6 +58,29 @@ def filter_app_groups(app_groups, query):
         group_key: keys
         for group_key, keys in app_groups.items()
         if group_matches_search(group_key[0], group_key[1], keys, query)
+    }
+
+
+def locale_key_by_name(locale_name):
+    return next((key for key, value in GP_LOCALES_RAW.items() if value == locale_name), DEFAULT_PREVIEW_LOCALE)
+
+
+def platform_label_for_app_id(app_id):
+    return "App Store" if str(app_id).isdigit() else "Google Play"
+
+
+def preview_matches(preview, app_id, locale):
+    return bool(preview and preview.get("app_id") == app_id and preview.get("locale") == locale and preview.get("data"))
+
+
+def current_dict_from_fetch_result(result):
+    return {
+        "title": result["title"],
+        "summary": result["summary"],
+        "description": result["description"],
+        "icon": result.get("icon", ""),
+        "header_image": result.get("headerImage", ""),
+        "screenshots": result.get("screenshots", []),
     }
 
 
@@ -443,48 +468,92 @@ with st.sidebar:
     st.info("Чтобы получать уведомления, сначала напишите боту.")
     st.link_button("➕ Добавить бота", "https://t.me/aso_omg_bot", use_container_width=True)
     
-    new_id = st.text_input("Package ID / App ID", placeholder="com.app.name ИЛИ 835599320").strip()
-    selected_names = st.multiselect("Выберите локали", options=list(GP_LOCALES_RAW.values()), default=["English (United States)"])
-    new_geos = [k for k, v in GP_LOCALES_RAW.items() if v in selected_names]
-    
-    if users_dict:
-        add_for_user = st.selectbox("Добавить для пользователя", options=["Выбрать..."] + list(users_dict.keys()))
-    else:
-        add_for_user = "Выбрать..."
+    locale_names = list(GP_LOCALES_RAW.values())
+    default_preview_name = GP_LOCALES_RAW[DEFAULT_PREVIEW_LOCALE]
+    with st.form("add_app_preview_form"):
+        new_id = st.text_input("Package ID / App ID", placeholder="com.app.name ИЛИ 835599320").strip()
+        preview_locale_name = st.selectbox(
+            "Локаль для поиска",
+            options=locale_names,
+            index=locale_names.index(default_preview_name),
+        )
+        find_app_submitted = st.form_submit_button("Найти приложение", use_container_width=True)
+    preview_geo = locale_key_by_name(preview_locale_name)
 
-    can_add_app = bool(new_id and new_geos and add_for_user != "Выбрать...")
+    if find_app_submitted:
+        if not new_id:
+            st.warning("Введите Package ID / App ID.")
+        else:
+            with st.spinner("Ищу приложение..."):
+                try:
+                    preview_data = fetch_app_data(new_id, preview_geo)
+                    st.session_state[ADD_APP_PREVIEW_KEY] = {
+                        "app_id": new_id,
+                        "locale": preview_geo,
+                        "data": preview_data,
+                    }
+                    st.success("Приложение найдено.")
+                except Exception as e:
+                    st.session_state.pop(ADD_APP_PREVIEW_KEY, None)
+                    st.error(f"Не удалось найти приложение ({e})")
+
+    preview = st.session_state.get(ADD_APP_PREVIEW_KEY)
+    has_preview = preview_matches(preview, new_id, preview_geo)
+    selected_names = []
+    new_geos = []
+    add_for_user = "Выбрать..."
+
+    if has_preview:
+        preview_data = preview["data"]
+        preview_title = preview_data.get("title") or preview["app_id"]
+        preview_icon = preview_data.get("icon")
+        col_preview_icon, col_preview_text = st.columns([1, 3])
+        with col_preview_icon:
+            if preview_icon:
+                st.image(preview_icon, width=56)
+        with col_preview_text:
+            st.write(f"**{preview_title}**")
+            st.caption(f"{platform_label_for_app_id(preview['app_id'])} · {preview['app_id']}")
+            st.caption(f"Проверено в {GP_LOCALES_RAW.get(preview['locale'], preview['locale'])}")
+
+        default_locale_names = [GP_LOCALES_RAW.get(preview_geo, default_preview_name)]
+        selected_names = st.multiselect("Выберите локали", options=locale_names, default=default_locale_names)
+        new_geos = [k for k, v in GP_LOCALES_RAW.items() if v in selected_names]
+
+        if users_dict:
+            add_for_user = st.selectbox("Добавить для пользователя", options=["Выбрать..."] + list(users_dict.keys()))
+        else:
+            st.warning("Пользователи не найдены.")
+
+    can_add_app = bool(has_preview and new_geos and add_for_user != "Выбрать...")
     if st.button(
         "Добавить в мониторинг",
         type="primary",
         use_container_width=True,
         disabled=not can_add_app,
-        help="Выберите приложение, локали и пользователя.",
+        help="Сначала найдите приложение, затем выберите локали и пользователя.",
     ):
-        if new_id and new_geos and add_for_user != "Выбрать...":
+        if can_add_app:
+            app_id = preview["app_id"]
+            preview_data = preview["data"]
+            preview_locale = preview["locale"]
             selected_chat_id = str(users_dict[add_for_user]).strip()
             
             success_added = 0
             added_keys = set()
             with st.spinner(f"Загрузка локалей..."):
                 for geo in new_geos:
-                    u_key = f"{new_id}_{geo}_{selected_chat_id}"
+                    u_key = f"{app_id}_{geo}_{selected_chat_id}"
                     if u_key in db: 
                         st.warning(f"[{geo}] Уже отслеживается!")
                     else:
                         try:
-                            res = fetch_app_data(new_id, geo)
+                            res = preview_data if geo == preview_locale else fetch_app_data(app_id, geo)
                             db[u_key] = {
-                                "package_id": new_id,
+                                "package_id": app_id,
                                 "geo": geo,
                                 "chat_id": selected_chat_id,
-                                "current": {
-                                    "title": res["title"],
-                                    "summary": res["summary"],
-                                    "description": res["description"],
-                                    "icon": res.get("icon", ""),
-                                    "header_image": res.get("headerImage", ""),
-                                    "screenshots": res.get("screenshots", []),
-                                },
+                                "current": current_dict_from_fetch_result(res),
                                 "history": [],
                                 "check_log": [{"time": get_minsk_time(), "status": "🆕 Добавлено"}],
                             }
@@ -495,6 +564,7 @@ with st.sidebar:
 
             if success_added > 0:
                 if save_apps_or_show_error(db, updated_keys=added_keys):
+                    st.session_state.pop(ADD_APP_PREVIEW_KEY, None)
                     st.success(f"Успешно добавлено локалей: {success_added}")
                     st.rerun()
 
