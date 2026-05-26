@@ -1,5 +1,6 @@
 import streamlit as st
 import time
+from datetime import UTC, datetime, timedelta
 
 from core import (
     GP_LOCALES_RAW,
@@ -26,6 +27,7 @@ gemini = GeminiClient(settings)
 telegram = TelegramClient(settings)
 repo = StreamlitAppsRepository.connect()
 users_dict = repo.load_users()
+STALE_CHECK_HOURS = 24
 
 
 def owner_name_for(chat_id):
@@ -70,6 +72,149 @@ def latest_log_status(info):
     if not logs:
         return ""
     return logs[-1].get("status", "")
+
+
+def latest_log_time(info):
+    logs = info.get("check_log") or []
+    if not logs:
+        return None
+    try:
+        return datetime.strptime(logs[-1].get("time", ""), "%d.%m.%Y %H:%M:%S")
+    except (TypeError, ValueError):
+        return None
+
+
+def log_time(log):
+    try:
+        return datetime.strptime(log.get("time", ""), "%d.%m.%Y %H:%M:%S")
+    except (TypeError, ValueError):
+        return datetime.min
+
+
+def current_minsk_datetime():
+    return (datetime.now(UTC) + timedelta(hours=3)).replace(tzinfo=None)
+
+
+def is_error_status(status):
+    return str(status or "").startswith("❌")
+
+
+def is_change_status(status):
+    return "Изменение" in str(status or "")
+
+
+def is_stale_info(info, now=None):
+    checked_at = latest_log_time(info)
+    if not checked_at:
+        return True
+    current_time = now or current_minsk_datetime()
+    return current_time - checked_at > timedelta(hours=STALE_CHECK_HOURS)
+
+
+def is_problem_info(info):
+    status = latest_log_status(info)
+    return is_error_status(status) or is_stale_info(info)
+
+
+def flatten_log_entries(data, predicate):
+    rows = []
+    for info in data.values():
+        current = info.get("current", {})
+        title = current.get("title") or info.get("package_id", "")
+        for log in info.get("check_log") or []:
+            status = log.get("status", "")
+            if not predicate(status):
+                continue
+            rows.append({
+                "time": log.get("time", ""),
+                "owner": owner_name_for(info.get("chat_id")),
+                "app": title,
+                "geo": str(info.get("geo", "")).upper(),
+                "status": status,
+            })
+    return sorted(rows, key=lambda row: log_time({"time": row["time"]}), reverse=True)
+
+
+def row_for_info(info, status=None):
+    current = info.get("current", {})
+    return {
+        "Время": latest_log_label(info).split(" · ")[0],
+        "Владелец": owner_name_for(info.get("chat_id")),
+        "Приложение": current.get("title") or info.get("package_id", ""),
+        "Локаль": str(info.get("geo", "")).upper(),
+        "Статус": status or latest_log_status(info) or "Проверок еще не было",
+    }
+
+
+def render_health_panel(data):
+    now = current_minsk_datetime()
+    infos = list(data.values())
+    error_infos = [info for info in infos if is_error_status(latest_log_status(info))]
+    change_infos = [info for info in infos if is_change_status(latest_log_status(info))]
+    unchecked_infos = [info for info in infos if not info.get("check_log")]
+    stale_infos = [info for info in infos if is_stale_info(info, now)]
+
+    st.subheader("Состояние сервиса")
+    col_err, col_change, col_empty, col_stale = st.columns(4)
+    col_err.metric("Ошибки", len(error_infos))
+    col_change.metric("Последние изменения", len(change_infos))
+    col_empty.metric("Без проверок", len(unchecked_infos))
+    col_stale.metric(f"Старше {STALE_CHECK_HOURS} ч", len(stale_infos))
+
+    if not infos:
+        st.info("Пока нет локалей для мониторинга.")
+        return
+
+    if error_infos:
+        st.warning("Есть локали с ошибками проверки.")
+    elif stale_infos:
+        st.warning("Есть локали, которые давно не проверялись.")
+    else:
+        st.success("Критичных проблем по последним логам не видно.")
+
+    recent_errors = flatten_log_entries(data, is_error_status)[:5]
+    recent_changes = flatten_log_entries(data, is_change_status)[:5]
+    stale_rows = [
+        row_for_info(info, "Давно не проверялась" if info.get("check_log") else "Проверок еще не было")
+        for info in sorted(stale_infos, key=lambda item: latest_log_time(item) or datetime.min)[:10]
+    ]
+
+    tab_errors, tab_changes, tab_stale = st.tabs(["Ошибки", "Изменения", "Давно не проверялись"])
+    with tab_errors:
+        if recent_errors:
+            st.dataframe(
+                [{
+                    "Время": row["time"],
+                    "Владелец": row["owner"],
+                    "Приложение": row["app"],
+                    "Локаль": row["geo"],
+                    "Статус": row["status"],
+                } for row in recent_errors],
+                hide_index=True,
+                use_container_width=True,
+            )
+        else:
+            st.caption("Ошибок в последних логах нет.")
+    with tab_changes:
+        if recent_changes:
+            st.dataframe(
+                [{
+                    "Время": row["time"],
+                    "Владелец": row["owner"],
+                    "Приложение": row["app"],
+                    "Локаль": row["geo"],
+                    "Статус": row["status"],
+                } for row in recent_changes],
+                hide_index=True,
+                use_container_width=True,
+            )
+        else:
+            st.caption("Недавних изменений в последних логах нет.")
+    with tab_stale:
+        if stale_rows:
+            st.dataframe(stale_rows, hide_index=True, use_container_width=True)
+        else:
+            st.caption("Все локали проверялись недавно.")
 
 
 def set_flash(kind, message):
@@ -217,6 +362,7 @@ with st.sidebar:
         "Поиск",
         placeholder="Название, Package ID, локаль или владелец",
     ).strip()
+    show_problem_only = st.checkbox("Показать только проблемные", value=False)
 
     st.divider()
     st.header("➕ Добавить приложение")
@@ -374,9 +520,13 @@ if st.button(
 # --- ФИЛЬТРАЦИЯ И ГРУППИРОВКА ---
 android_apps = {}
 ios_apps = {}
+visible_db = {}
 
 for key, info in db.items():
     if view_chat_id and str(info.get('chat_id')).strip() != view_chat_id:
+        continue
+    visible_db[key] = info
+    if show_problem_only and not is_problem_info(info):
         continue
 
     grp = (info['package_id'], info['chat_id'])
@@ -391,6 +541,7 @@ android_apps = filter_app_groups(android_apps, search_query)
 ios_apps = filter_app_groups(ios_apps, search_query)
 
 render_overview(android_apps, ios_apps)
+render_health_panel(visible_db)
 st.divider()
 
 tab_android, tab_ios = st.tabs(["🤖 Android (Google Play)", "🍎 iOS (App Store)"])
