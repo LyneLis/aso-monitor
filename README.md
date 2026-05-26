@@ -24,6 +24,9 @@ The Google Sheet is expected to have:
 - `apps` worksheet for monitored app rows.
 - `users` worksheet with at least `name` and `chat_id` columns.
 
+Google Sheets is the only runtime state store. The legacy local
+`apps_history.json` file is no longer used.
+
 ## Local Bot Setup
 
 Create a virtual environment and install the bot dependencies:
