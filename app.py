@@ -366,6 +366,50 @@ def repo_load_error_message(repository, load_errors):
     return getattr(repository, "last_error", "") or "Неизвестная ошибка"
 
 
+def send_single_locale_alert(info, changed, outcome, *, skip_ai=False):
+    if not outcome or not outcome.result.has_changes:
+        return
+
+    result = outcome.result
+    new_snap = outcome.new_snapshot
+    old_snap = outcome.old_snapshot
+    c_id = info["chat_id"]
+    os_icon = "🍎" if str(info["package_id"]).isdigit() else "🤖"
+    msg_prefix = "🔄 ОТКАТ (A/B ТЕСТ)" if result.is_rollback else "⚠️ ИЗМЕНЕНИЕ"
+    alert_msg = (
+        f"{msg_prefix} {os_icon} [{info['geo'].upper()}]\n📦 {new_snap.title}\n"
+        f"Изменено: {', '.join(changed)}"
+    )
+    if result.is_rollback:
+        alert_msg += "\n\n⚠️ Тексты вернулись к одной из прошлых версий."
+    telegram.send_message(alert_msg, c_id)
+
+    if result.text_payload:
+        report_content = format_single_locale_report(
+            info["package_id"],
+            info["geo"],
+            old_snap,
+            new_snap,
+            get_minsk_time(),
+        )
+        telegram.send_document(
+            report_content,
+            f"report_{info['package_id']}.txt",
+            f"📄 Детальный отчет: {info['package_id']}",
+            c_id,
+        )
+
+        if not skip_ai:
+            tp = result.text_payload
+            raw_ai_analysis = gemini.analyze_changes(
+                tp["old_t"], tp["new_t"], tp["old_s"], tp["new_s"], tp["old_d"], tp["new_d"]
+            )
+            telegram.send_message(
+                f"🤖 Анализ ИИ (Сайт):\n\n{clean_ai_for_telegram(raw_ai_analysis)}",
+                c_id,
+            )
+
+
 def run_check_for_item(key, info, user_reports_dict, single_mode=False, skip_ai=False):
     updates = 0
     changed = []
@@ -391,43 +435,6 @@ def run_check_for_item(key, info, user_reports_dict, single_mode=False, skip_ai=
             updates = 1
             changed = result.changed
             text_changes_payload = result.text_payload
-            c_id = info["chat_id"]
-
-            if single_mode:
-                os_icon = "🍎" if str(info["package_id"]).isdigit() else "🤖"
-                msg_prefix = "🔄 ОТКАТ (A/B ТЕСТ)" if result.is_rollback else "⚠️ ИЗМЕНЕНИЕ"
-                alert_msg = (
-                    f"{msg_prefix} {os_icon} [{info['geo'].upper()}]\n📦 {new_snap.title}\n"
-                    f"Изменено: {', '.join(changed)}"
-                )
-                if result.is_rollback:
-                    alert_msg += "\n\n⚠️ Тексты вернулись к одной из прошлых версий."
-                telegram.send_message(alert_msg, c_id)
-
-                if result.text_payload:
-                    report_content = format_single_locale_report(
-                        info["package_id"],
-                        info["geo"],
-                        old_snap,
-                        new_snap,
-                        get_minsk_time(),
-                    )
-                    telegram.send_document(
-                        report_content,
-                        f"report_{info['package_id']}.txt",
-                        f"📄 Детальный отчет: {info['package_id']}",
-                        c_id,
-                    )
-
-                    if not skip_ai:
-                        tp = result.text_payload
-                        raw_ai_analysis = gemini.analyze_changes(
-                            tp["old_t"], tp["new_t"], tp["old_s"], tp["new_s"], tp["old_d"], tp["new_d"]
-                        )
-                        telegram.send_message(
-                            f"🤖 Анализ ИИ (Сайт):\n\n{clean_ai_for_telegram(raw_ai_analysis)}",
-                            c_id,
-                        )
 
             info["history"].append(info["current"])
             info["current"] = current_dict_from_snapshot(new_snap)
@@ -627,6 +634,9 @@ if st.button(
         progress.empty()
         status_box.empty()
 
+        if not save_apps_or_show_error(db, updated_keys=db.keys()):
+            st.stop()
+
         total_alerts = len(batched_alerts)
         if total_alerts:
             alert_progress = st.progress(0, text="Подготовка уведомлений")
@@ -668,9 +678,7 @@ if st.button(
 
             alert_progress.empty()
             alert_status.empty()
-        
-        if not save_apps_or_show_error(db, updated_keys=db.keys()):
-            st.stop()
+
         if updates_count > 0 or errors_count > 0:
             flash_kind = "warning" if errors_count else "success"
             set_flash(flash_kind, f"Проверка завершена. Изменений: {updates_count}. Ошибок: {errors_count}.")
@@ -761,6 +769,7 @@ def render_app_groups(app_groups, os_icon):
                                 progress.progress(idx / len(keys), text=f"Проверено локалей: {idx}/{len(keys)}")
                             progress.empty()
                             status_box.empty()
+                        if save_apps_or_show_error(db, updated_keys=keys):
                             if upd > 0 and batched_ai:
                                 st.info("Готовлю пакетный AI-разбор")
                                 ai_msg = gemini.analyze_batched_changes(batched_ai)
@@ -768,7 +777,6 @@ def render_app_groups(app_groups, os_icon):
                                     f"🤖 Пакетный анализ ({pkg_id}):\n\n{clean_ai_for_telegram(ai_msg)}",
                                     chat_id,
                                 )
-                        if save_apps_or_show_error(db, updated_keys=keys):
                             if errors:
                                 set_flash("warning", f"Проверка завершена. Изменений: {upd}. Ошибок: {errors}.")
                             elif upd:
@@ -828,8 +836,10 @@ def render_app_groups(app_groups, os_icon):
                         if summary:
                             st.caption(summary)
                         if st.button("Проверить локаль", key=f"btn_sng_{k}", use_container_width=True):
-                            u, changed, _, _ = run_check_for_item(k, info, {}, single_mode=True)
+                            u, changed, _, outcome = run_check_for_item(k, info, {})
                             if save_apps_or_show_error(db, updated_keys={k}):
+                                if u:
+                                    send_single_locale_alert(info, changed, outcome)
                                 if latest_log_status(info).startswith("❌"):
                                     set_flash("warning", f"{info['geo'].upper()}: проверка завершилась с ошибкой.")
                                 elif u:
