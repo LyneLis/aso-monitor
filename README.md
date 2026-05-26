@@ -7,7 +7,6 @@ ASO Monitor PRO watches Google Play and App Store app metadata across locales, s
 - `app.py` - Streamlit web interface for adding apps, manual checks, audits, and viewing monitored locales.
 - `bot.py` - scheduled checker used by GitHub Actions.
 - `core/` - comparison logic, parsers, Telegram client, Gemini client, settings, and formatting helpers.
-- `database/` - Postgres schema and repository used for the gradual database migration.
 - `sheets/` - Google Sheets repositories and row serialization.
 - `tests/` - focused tests for comparison, serialization, Telegram helpers, subtitle decoding, and bot recovery cases.
 
@@ -19,7 +18,6 @@ The project uses these values:
 - `GEMINI_API_KEY` - Gemini API key for AI analysis.
 - `SPREADSHEET_URL` - Google Sheet URL. If omitted, the default URL from `core/config.py` is used.
 - `GCP_SERVICE_ACCOUNT_JSON` - full Google service account JSON as one environment variable. Required for `bot.py`.
-- `DATABASE_URL` - optional Postgres connection string for the gradual database migration.
 
 The Google Sheet is expected to have:
 
@@ -67,7 +65,6 @@ Create `.streamlit/secrets.toml` locally. The `.streamlit/` folder is ignored by
 TELEGRAM_TOKEN = "<telegram-bot-token>"
 GEMINI_API_KEY = "<gemini-api-key>"
 SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/.../edit"
-DATABASE_URL = "postgresql://..."
 
 [connections.gsheets]
 spreadsheet = "https://docs.google.com/spreadsheets/d/.../edit"
@@ -106,7 +103,6 @@ The scheduled workflow is in `.github/workflows/aso_v2.yml` and runs every 12 ho
 - `GCP_SERVICE_ACCOUNT_JSON`
 - `GEMINI_API_KEY`
 - `SPREADSHEET_URL`
-- `DATABASE_URL` (optional until the app is switched from Sheets to Postgres)
 
 There is also a monthly keep-alive workflow in `.github/workflows/keep_alive.yml`.
 
