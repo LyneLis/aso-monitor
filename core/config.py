@@ -1,6 +1,6 @@
 import os
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 # Override via SPREADSHEET_URL in env (bot) or Streamlit secrets (app).
 DEFAULT_SPREADSHEET_URL = (
@@ -26,8 +26,14 @@ class Settings:
 
     @classmethod
     def from_streamlit_secrets(cls, secrets) -> "Settings":
+        def secret_get(key: str) -> Optional[Any]:
+            try:
+                return secrets.get(key)
+            except Exception:
+                return None
+
         return cls(
-            gemini_api_key=secrets.get("GEMINI_API_KEY"),
-            telegram_token=secrets.get("TELEGRAM_TOKEN"),
-            spreadsheet_url=secrets.get("SPREADSHEET_URL") or DEFAULT_SPREADSHEET_URL,
+            gemini_api_key=secret_get("GEMINI_API_KEY"),
+            telegram_token=secret_get("TELEGRAM_TOKEN"),
+            spreadsheet_url=secret_get("SPREADSHEET_URL") or DEFAULT_SPREADSHEET_URL,
         )
