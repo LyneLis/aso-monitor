@@ -1,5 +1,6 @@
 import re
 from typing import List, Tuple
+from urllib.parse import urlencode
 
 import requests
 from bs4 import BeautifulSoup
@@ -77,13 +78,13 @@ def _collect_screenshots_from_soup(soup: BeautifulSoup) -> List[str]:
     return clean_screens
 
 
-def _parse_ios_page_html(html_content: str, subtitle: str, screens: List[str]) -> Tuple[str, List[str]]:
+def _parse_ios_page_html(html_content: str, screens: List[str]) -> Tuple[str, List[str]]:
     soup = BeautifulSoup(html_content, "html.parser")
 
-    if not subtitle:
-        p_tag = soup.find("p", class_=SUBTITLE_CLASS_RE)
-        if p_tag:
-            subtitle = p_tag.get_text(strip=True)
+    subtitle = ""
+    p_tag = soup.find("p", class_=SUBTITLE_CLASS_RE)
+    if p_tag:
+        subtitle = p_tag.get_text(strip=True)
 
     if not subtitle:
         sub_match = SUBTITLE_JSON_RE.search(html_content)
@@ -100,6 +101,12 @@ def _parse_ios_page_html(html_content: str, subtitle: str, screens: List[str]) -
     return subtitle, screens
 
 
+def _apple_web_lang(locale: str) -> str:
+    if locale.lower().startswith("iw"):
+        return locale.replace("iw", "he", 1)
+    return locale
+
+
 def _fetch_ios_app_data(pkg_id: str, locale: str, l_code: str, c_code: str) -> dict:
     apple_lang = locale.replace("-", "_").lower()
     url = f"https://itunes.apple.com/lookup?id={pkg_id}&country={c_code}&lang={apple_lang}"
@@ -114,18 +121,19 @@ def _fetch_ios_app_data(pkg_id: str, locale: str, l_code: str, c_code: str) -> d
     data = res["results"][0]
     screens = data.get("screenshotUrls", []) or data.get("ipadScreenshotUrls", [])
     icon_url = data.get("artworkUrl512", data.get("artworkUrl100", "")).replace(".webp", ".jpg")
-    subtitle = data.get("subtitle", "") or ""
+    subtitle = ""
 
     try:
-        app_url = f"https://apps.apple.com/{c_code.lower()}/app/id{pkg_id}"
+        web_lang = _apple_web_lang(locale)
+        app_url = f"https://apps.apple.com/{c_code.lower()}/app/id{pkg_id}?{urlencode({'l': web_lang})}"
         headers = {
             "User-Agent": APPLE_USER_AGENT,
-            "Accept-Language": f"{locale},en-US;q=0.9",
+            "Accept-Language": f"{web_lang},{l_code};q=0.9,en-US;q=0.6",
         }
         response = requests.get(app_url, headers=headers, timeout=15)
         if response.status_code == 200:
             response.encoding = "utf-8"
-            subtitle, screens = _parse_ios_page_html(response.text, subtitle, screens)
+            subtitle, screens = _parse_ios_page_html(response.text, screens)
     except Exception as e:
         print(f"⚠️ Ошибка парсера App Store HTML: {e}")
 
