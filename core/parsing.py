@@ -1,0 +1,149 @@
+import re
+from typing import List, Tuple
+
+import requests
+from bs4 import BeautifulSoup
+from google_play_scraper import app as gp_app
+
+from core.subtitle import decode_apple_subtitle
+
+APPLE_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+SUBTITLE_JSON_RE = re.compile(r'"subtitle"\s*:\s*"((?:[^"\\]|\\.)*)"')
+SUBTITLE_CLASS_RE = re.compile(r"^subtitle")
+SCREENSHOT_SIZE_RE = re.compile(r"/(\d+)x(\d+)")
+SKIP_IMAGE_KEYWORDS = ("icon", "logo", "artwork", "brand")
+
+
+def _locale_codes(locale: str) -> Tuple[str, str]:
+    if locale == "es-419":
+        return "es-419", "MX"
+    if "-" in locale:
+        return locale, locale.split("-")[1].upper()
+    return locale.lower(), locale.upper()
+
+
+def _screenshot_url_to_jpg(img_url: str) -> str:
+    return (
+        img_url.replace(".webp", ".jpg")
+        .replace("w.webp", "bb.jpg")
+        .replace("w.png", "bb.png")
+    )
+
+
+def _collect_screenshots_from_soup(soup: BeautifulSoup) -> List[str]:
+    clean_screens: List[str] = []
+    all_imgs = soup.find_all("picture")
+
+    for pic in all_imgs:
+        source = pic.find("source", type="image/jpeg") or pic.find("source", type="image/webp")
+        if not source or not source.has_attr("srcset"):
+            continue
+        img_url = source["srcset"].split()[0]
+        s_lower = img_url.lower()
+        if any(x in s_lower for x in SKIP_IMAGE_KEYWORDS):
+            continue
+        res_match = SCREENSHOT_SIZE_RE.search(s_lower)
+        if not res_match:
+            continue
+        w, h = int(res_match.group(1)), int(res_match.group(2))
+        if (w == 300 or h == 300) and w != h:
+            s_jpg = _screenshot_url_to_jpg(img_url)
+            if s_jpg not in clean_screens:
+                clean_screens.append(s_jpg)
+
+    if clean_screens:
+        return clean_screens
+
+    for pic in all_imgs:
+        source = pic.find("source", type="image/jpeg") or pic.find("source", type="image/webp")
+        if not source or not source.has_attr("srcset"):
+            continue
+        img_url = source["srcset"].split()[0]
+        s_lower = img_url.lower()
+        if any(x in s_lower for x in ("icon", "logo", "artwork")):
+            continue
+        res_match = SCREENSHOT_SIZE_RE.search(s_lower)
+        if not res_match:
+            continue
+        w, h = int(res_match.group(1)), int(res_match.group(2))
+        if w != h and (w >= 300 or h >= 300):
+            s_jpg = img_url.replace(".webp", ".jpg").replace("w.webp", "bb.jpg")
+            if s_jpg not in clean_screens:
+                clean_screens.append(s_jpg)
+
+    return clean_screens
+
+
+def _parse_ios_page_html(html_content: str, subtitle: str, screens: List[str]) -> Tuple[str, List[str]]:
+    soup = BeautifulSoup(html_content, "html.parser")
+
+    if not subtitle:
+        p_tag = soup.find("p", class_=SUBTITLE_CLASS_RE)
+        if p_tag:
+            subtitle = p_tag.get_text(strip=True)
+
+    if not subtitle:
+        sub_match = SUBTITLE_JSON_RE.search(html_content)
+        if sub_match:
+            subtitle = decode_apple_subtitle(sub_match.group(1))
+
+    if subtitle:
+        subtitle = subtitle.strip('"')
+
+    clean_screens = _collect_screenshots_from_soup(soup)
+    if clean_screens:
+        screens = clean_screens
+
+    return subtitle, screens
+
+
+def _fetch_ios_app_data(pkg_id: str, locale: str, l_code: str, c_code: str) -> dict:
+    apple_lang = locale.replace("-", "_").lower()
+    url = f"https://itunes.apple.com/lookup?id={pkg_id}&country={c_code}&lang={apple_lang}"
+    res = requests.get(url, timeout=10).json()
+
+    if res.get("resultCount", 0) == 0:
+        url_fallback = f"https://itunes.apple.com/lookup?id={pkg_id}&country={c_code}"
+        res = requests.get(url_fallback, timeout=10).json()
+        if res.get("resultCount", 0) == 0:
+            raise Exception(f"Приложение {pkg_id} не найдено в App Store ({c_code})")
+
+    data = res["results"][0]
+    screens = data.get("screenshotUrls", []) or data.get("ipadScreenshotUrls", [])
+    icon_url = data.get("artworkUrl512", data.get("artworkUrl100", "")).replace(".webp", ".jpg")
+    subtitle = data.get("subtitle", "") or ""
+
+    try:
+        app_url = f"https://apps.apple.com/{c_code.lower()}/app/id{pkg_id}"
+        headers = {
+            "User-Agent": APPLE_USER_AGENT,
+            "Accept-Language": f"{locale},en-US;q=0.9",
+        }
+        response = requests.get(app_url, headers=headers, timeout=15)
+        if response.status_code == 200:
+            response.encoding = "utf-8"
+            subtitle, screens = _parse_ios_page_html(response.text, subtitle, screens)
+    except Exception as e:
+        print(f"⚠️ Ошибка парсера App Store HTML: {e}")
+
+    return {
+        "title": data.get("trackName", ""),
+        "summary": subtitle or "",
+        "description": data.get("description", ""),
+        "icon": icon_url or "",
+        "headerImage": "",
+        "screenshots": [s.replace(".webp", ".jpg") for s in screens],
+    }
+
+
+def fetch_app_data(pkg_id, locale: str) -> dict:
+    l_code, c_code = _locale_codes(locale)
+    if l_code == "iw":
+        l_code = "iw"
+
+    if str(pkg_id).isdigit():
+        return _fetch_ios_app_data(str(pkg_id), locale, l_code, c_code)
+    return gp_app(pkg_id, lang=l_code, country=c_code)

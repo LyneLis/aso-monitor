@@ -19,7 +19,7 @@ google-api-python-client==2.196.0
 google-auth==2.52.0
 google-auth-httplib2==0.4.0
 google-auth-oauthlib==1.4.0
-google-generativeai==0.8.6
+google-genai==2.6.0
 google-play-scraper==1.2.7
 googleapis-common-protos==1.75.0
 grpcio==1.80.0
