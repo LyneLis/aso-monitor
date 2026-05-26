@@ -8,15 +8,14 @@ from core import (
     Settings,
     TelegramClient,
     add_changed_locale_to_batch,
-    check_item_snapshots,
     clean_ai_for_telegram,
-    current_dict_from_snapshot,
     fetch_app_data,
-    fill_missing_assets,
     format_changes_report,
     format_single_locale_report,
     get_minsk_time,
-    snapshot_from_current,
+    group_ai_audit,
+    run_site_check_for_item,
+    set_group_ai_audit,
 )
 from sheets import StreamlitAppsRepository
 
@@ -410,53 +409,6 @@ def send_single_locale_alert(info, changed, outcome, *, skip_ai=False):
             )
 
 
-def run_check_for_item(key, info, user_reports_dict, single_mode=False, skip_ai=False):
-    updates = 0
-    changed = []
-    text_changes_payload = None
-    outcome = None
-
-    try:
-        log_entry = {"time": get_minsk_time(), "status": "🟢 Ок"}
-        old_snap, is_table_error = snapshot_from_current(info["current"])
-
-        outcome = check_item_snapshots(
-            info["package_id"],
-            info["geo"],
-            old_snap,
-            info.get("history", []),
-            is_table_error,
-            label_style="web",
-        )
-        new_snap = outcome.new_snapshot
-        result = outcome.result
-
-        if result.has_changes:
-            updates = 1
-            changed = result.changed
-            text_changes_payload = result.text_payload
-
-            info["history"].append(info["current"])
-            info["current"] = current_dict_from_snapshot(new_snap)
-            log_entry["status"] = f"🔴 Изменение ({', '.join(changed)})"
-
-        elif result.is_table_error:
-            info["current"] = current_dict_from_snapshot(new_snap)
-            log_entry["status"] = "🟢 Исправление ошибки"
-        else:
-            fill_missing_assets(info["current"], new_snap)
-
-        info.setdefault("check_log", []).append(log_entry)
-        info["check_log"] = info["check_log"][-5:]
-    except Exception as e:
-        print(f"Ошибка проверки {key}: {e}")
-        log_entry = {"time": get_minsk_time(), "status": "❌ Ошибка"}
-        info.setdefault("check_log", []).append(log_entry)
-        info["check_log"] = info["check_log"][-5:]
-
-    return updates, changed, text_changes_payload, outcome
-
-
 # --- ИНТЕРФЕЙС ---
 st.title("🚀 ASO Monitor PRO")
 st.caption("Поддерживает Google Play (ID: com.app.name) и App Store (ID: 123456789)")
@@ -612,7 +564,7 @@ if st.button(
             info = db[key]
             title = info.get("current", {}).get("title") or info["package_id"]
             status_box.info(f"Проверка {idx}/{total_checks}: {title} · {info['geo'].upper()}")
-            u, changed_list, txt_payload, outcome = run_check_for_item(key, info, {}, single_mode=False, skip_ai=True)
+            u, changed_list, txt_payload, outcome = run_site_check_for_item(info, item_key=key)
             updates_count += u
             if latest_log_status(info).startswith("❌"):
                 errors_count += 1
@@ -760,7 +712,7 @@ def render_app_groups(app_groups, os_icon):
                                 locale_info = db[k]
                                 title = locale_info.get("current", {}).get("title") or locale_info["package_id"]
                                 status_box.info(f"Проверка {idx}/{len(keys)}: {title} · {locale_info['geo'].upper()}")
-                                u, _, txt_payload, _ = run_check_for_item(k, db[k], {}, single_mode=False, skip_ai=True)
+                                u, _, txt_payload, _ = run_site_check_for_item(db[k], item_key=k)
                                 upd += u
                                 if latest_log_status(db[k]).startswith("❌"):
                                     errors += 1
@@ -786,7 +738,7 @@ def render_app_groups(app_groups, os_icon):
                             st.rerun()
                 
                 with col2:
-                    saved_audit = first_info.get('ai_audit', '')
+                    saved_audit = group_ai_audit(db, keys)
                     btn_label = "Обновить ASO-разбор" if saved_audit else "Текущий ASO разбор"
                     
                     if st.button(btn_label, key=f"ai_force_{pkg_id}_{chat_id}", use_container_width=True):
@@ -803,8 +755,8 @@ def render_app_groups(app_groups, os_icon):
                             if batched_current:
                                 ai_msg = gemini.analyze_current_aso(batched_current)
                                 if not gemini.is_error_response(ai_msg):
-                                    db[keys[0]]['ai_audit'] = ai_msg
-                                    if save_apps_or_show_error(db, updated_keys={keys[0]}):
+                                    audit_keys = set_group_ai_audit(db, keys, ai_msg)
+                                    if save_apps_or_show_error(db, updated_keys=audit_keys):
                                         set_flash("success", "ASO-разбор обновлен.")
                                         st.rerun()
                                 else:
@@ -812,9 +764,9 @@ def render_app_groups(app_groups, os_icon):
                             else:
                                 st.error("Нет данных для анализа.")
             
-            if first_info.get('ai_audit'):
+            if saved_audit:
                 with st.expander("📊 Сохраненный ИИ-Аудит (Текущая стратегия)"):
-                    st.markdown(first_info['ai_audit'])
+                    st.markdown(saved_audit)
 
             tabs_loc = st.tabs([
                 f"{GP_LOCALES_RAW.get(db[k]['geo'], db[k]['geo'])} · {locale_status_label(db[k])}"
@@ -836,7 +788,7 @@ def render_app_groups(app_groups, os_icon):
                         if summary:
                             st.caption(summary)
                         if st.button("Проверить локаль", key=f"btn_sng_{k}", use_container_width=True):
-                            u, changed, _, outcome = run_check_for_item(k, info, {})
+                            u, changed, _, outcome = run_site_check_for_item(info, item_key=k)
                             if save_apps_or_show_error(db, updated_keys={k}):
                                 if u:
                                     send_single_locale_alert(info, changed, outcome)
