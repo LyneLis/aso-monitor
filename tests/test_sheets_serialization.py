@@ -1,3 +1,5 @@
+import pandas as pd
+
 from sheets.serialization import parse_json_list, storage_key, tracked_info_from_row, tracked_info_to_apps_row
 from sheets.streamlit_repo import StreamlitAppsRepository
 
@@ -43,3 +45,39 @@ def test_streamlit_repo_save_records_missing_connection():
 
     assert repo.save_apps({}) is False
     assert repo.last_error == "Нет подключения к Google Sheets."
+
+
+def test_streamlit_repo_save_merges_updated_keys_with_latest_sheet():
+    remote_existing = tracked_info_from_row("com.app", "us", "1", title="Remote title", summary="Fresh")
+    stale_existing = tracked_info_from_row("com.app", "us", "1", title="Local stale", summary="Old")
+    added = tracked_info_from_row("com.new", "us", "1", title="New app")
+
+    class Connection:
+        def __init__(self):
+            self.updated = None
+
+        def read(self, worksheet, ttl):
+            assert worksheet == "apps"
+            assert ttl == 0
+            return pd.DataFrame([tracked_info_to_apps_row(remote_existing)])
+
+        def update(self, worksheet, data):
+            assert worksheet == "apps"
+            self.updated = data
+
+    conn = Connection()
+    repo = StreamlitAppsRepository(conn, True)
+
+    assert repo.save_apps(
+        {
+            "com.app_us_1": stale_existing,
+            "com.new_us_1": added,
+        },
+        updated_keys={"com.new_us_1"},
+    )
+
+    rows = conn.updated.to_dict("records")
+    by_package = {row["package_id"]: row for row in rows}
+    assert by_package["com.app"]["title"] == "Remote title"
+    assert by_package["com.app"]["summary"] == "Fresh"
+    assert by_package["com.new"]["title"] == "New app"

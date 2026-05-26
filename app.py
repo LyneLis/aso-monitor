@@ -78,8 +78,8 @@ def render_overview(android_groups, ios_groups):
     col_users.metric("Владельцев", owner_count)
 
 
-def save_apps_or_show_error(data):
-    if repo.save_apps(data):
+def save_apps_or_show_error(data, *, updated_keys=None, deleted_keys=None):
+    if repo.save_apps(data, updated_keys=updated_keys, deleted_keys=deleted_keys):
         return True
     details = f" ({repo.last_error})" if repo.last_error else ""
     st.error(f"Не удалось сохранить изменения в Google Sheets{details}")
@@ -219,6 +219,7 @@ with st.sidebar:
             selected_chat_id = str(users_dict[add_for_user]).strip()
             
             success_added = 0
+            added_keys = set()
             with st.spinner(f"Загрузка локалей..."):
                 for geo in new_geos:
                     u_key = f"{new_id}_{geo}_{selected_chat_id}"
@@ -228,19 +229,27 @@ with st.sidebar:
                         try:
                             res = fetch_app_data(new_id, geo)
                             db[u_key] = {
-                                "package_id": new_id, "geo": geo, "chat_id": selected_chat_id,
+                                "package_id": new_id,
+                                "geo": geo,
+                                "chat_id": selected_chat_id,
                                 "current": {
-                                    "title": res['title'], "summary": res['summary'], "description": res['description'],
-                                    "icon": res.get('icon', ''), "header_image": res.get('headerImage', ''), "screenshots": res.get('screenshots', [])
+                                    "title": res["title"],
+                                    "summary": res["summary"],
+                                    "description": res["description"],
+                                    "icon": res.get("icon", ""),
+                                    "header_image": res.get("headerImage", ""),
+                                    "screenshots": res.get("screenshots", []),
                                 },
-                                "history": [], "check_log": [{"time": get_minsk_time(), "status": "🆕 Добавлено"}]
+                                "history": [],
+                                "check_log": [{"time": get_minsk_time(), "status": "🆕 Добавлено"}],
                             }
                             success_added += 1
+                            added_keys.add(u_key)
                         except Exception as e:
                             st.error(f"Ошибка: {geo} не найдено ({e})")
-                
+
             if success_added > 0:
-                if save_apps_or_show_error(db):
+                if save_apps_or_show_error(db, updated_keys=added_keys):
                     st.success(f"Успешно добавлено локалей: {success_added}")
                     st.rerun()
 
@@ -304,7 +313,7 @@ if st.button(
                 else:
                     telegram.send_message(f"⚠️ ИИ вернул ошибку: {ai_msg}", c_id)
         
-        if not save_apps_or_show_error(db):
+        if not save_apps_or_show_error(db, updated_keys=db.keys()):
             st.stop()
         if updates_count > 0:
             st.success(f"Готово. Изменений: {updates_count}")
@@ -378,7 +387,7 @@ def render_app_groups(app_groups, os_icon):
                                     f"🤖 Пакетный анализ ({pkg_id}):\n\n{clean_ai_for_telegram(ai_msg)}",
                                     chat_id,
                                 )
-                        if save_apps_or_show_error(db):
+                        if save_apps_or_show_error(db, updated_keys=keys):
                             st.rerun()
                 
                 with col2:
@@ -400,7 +409,7 @@ def render_app_groups(app_groups, os_icon):
                                 ai_msg = gemini.analyze_current_aso(batched_current)
                                 if not gemini.is_error_response(ai_msg):
                                     db[keys[0]]['ai_audit'] = ai_msg
-                                    if save_apps_or_show_error(db):
+                                    if save_apps_or_show_error(db, updated_keys={keys[0]}):
                                         st.rerun()
                                 else:
                                     st.error(f"Ошибка ИИ: {ai_msg}")
@@ -429,7 +438,7 @@ def render_app_groups(app_groups, os_icon):
                             st.caption(summary)
                         if st.button("Проверить локаль", key=f"btn_sng_{k}", use_container_width=True):
                             run_check_for_item(k, info, {}, single_mode=True)
-                            if save_apps_or_show_error(db):
+                            if save_apps_or_show_error(db, updated_keys={k}):
                                 st.rerun()
                     with c3:
                         confirm_key = f"confirm_del_{k}"
@@ -438,7 +447,7 @@ def render_app_groups(app_groups, os_icon):
                             if st.button("Да", key=f"del_yes_{k}", use_container_width=True):
                                 del db[k]
                                 st.session_state[confirm_key] = False
-                                if save_apps_or_show_error(db):
+                                if save_apps_or_show_error(db, deleted_keys={k}):
                                     st.rerun()
                             if st.button("Нет", key=f"del_no_{k}", use_container_width=True):
                                 st.session_state[confirm_key] = False

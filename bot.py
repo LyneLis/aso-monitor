@@ -14,6 +14,7 @@ from core import (
 )
 from core.telegram import BOT_CHUNK_LIMIT
 from sheets import GspreadAppsRepository
+from sheets.serialization import parse_json_list
 
 settings = Settings.from_env()
 telegram = TelegramClient(settings, message_limit=BOT_CHUNK_LIMIT)
@@ -27,6 +28,23 @@ def write_snapshot_to_row(row, snap):
     row["icon"] = snap.icon
     row["header_image"] = snap.header_image
     row["screenshots"] = json.dumps(snap.screenshots, ensure_ascii=False)
+
+
+def append_check_log(row, status, **extra):
+    current_log = parse_json_list(row.get("check_log", "[]"))
+    entry = {"time": get_minsk_time(), "status": status}
+    entry.update({key: value for key, value in extra.items() if value})
+    current_log.append(entry)
+    row["check_log"] = json.dumps(current_log[-5:], ensure_ascii=False)
+
+
+def save_row_error(repo, row_index, row, error):
+    error_text = str(error)[:300]
+    append_check_log(row, "❌ Авто: Ошибка", error=error_text)
+    try:
+        repo.update_row(row_index, row)
+    except Exception as save_error:
+        print(f"    ❌ Не удалось записать ошибку в таблицу: {save_error}")
 
 
 def check_apps(fetcher=None):
@@ -118,6 +136,7 @@ def check_apps(fetcher=None):
             time.sleep(0.6)
         except Exception as e:
             print(f"    ❌ Ошибка {p_id}: {e}")
+            save_row_error(repo, row_index, row, e)
 
     for (pkg_id, c_id, is_ios), data in batched_alerts.items():
         os_icon = "🍎" if is_ios else "🤖"

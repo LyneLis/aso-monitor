@@ -8,6 +8,9 @@ from core.config import Settings
 DEFAULT_MESSAGE_LIMIT = 4000
 BOT_CHUNK_LIMIT = 3900
 TELEGRAM_REQUEST_TIMEOUT_SEC = 15
+TELEGRAM_RETRY_COUNT = 2
+TELEGRAM_RETRY_SLEEP_SEC = 0.0
+RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 
 
 def clean_ai_for_telegram(text: str) -> str:
@@ -31,10 +34,14 @@ class TelegramClient:
         settings: Settings,
         message_limit: int = DEFAULT_MESSAGE_LIMIT,
         request_timeout: float = TELEGRAM_REQUEST_TIMEOUT_SEC,
+        retry_count: int = TELEGRAM_RETRY_COUNT,
+        retry_sleep: float = TELEGRAM_RETRY_SLEEP_SEC,
     ):
         self._token = settings.telegram_token
         self._limit = message_limit
         self._request_timeout = request_timeout
+        self._retry_count = retry_count
+        self._retry_sleep = retry_sleep
 
     @property
     def token(self) -> Optional[str]:
@@ -50,19 +57,39 @@ class TelegramClient:
         if not url:
             return None
 
-        try:
-            response = requests.post(url, timeout=self._request_timeout, **kwargs)
-        except requests.RequestException as e:
-            print(f"⚠️ Telegram {method}: ошибка запроса: {e}")
-            return None
-        except Exception as e:
-            print(f"⚠️ Telegram {method}: неожиданная ошибка: {e}")
-            return None
+        for attempt in range(self._retry_count + 1):
+            try:
+                response = requests.post(url, timeout=self._request_timeout, **kwargs)
+            except requests.RequestException as e:
+                print(f"⚠️ Telegram {method}: ошибка запроса: {e}")
+                if attempt < self._retry_count:
+                    self._wait_before_retry()
+                    continue
+                return None
+            except Exception as e:
+                print(f"⚠️ Telegram {method}: неожиданная ошибка: {e}")
+                return None
 
-        if response.status_code != 200:
-            body = response.text[:300] if response.text else ""
-            print(f"⚠️ Telegram {method}: HTTP {response.status_code} {body}")
-        return response
+            if response.status_code != 200:
+                body = response.text[:300] if response.text else ""
+                print(f"⚠️ Telegram {method}: HTTP {response.status_code} {body}")
+                if response.status_code in RETRYABLE_STATUS_CODES and attempt < self._retry_count:
+                    self._wait_before_retry(response)
+                    continue
+            return response
+
+        return None
+
+    def _wait_before_retry(self, response: Optional[requests.Response] = None) -> None:
+        retry_after = None
+        if response is not None:
+            retry_after = getattr(response, "headers", {}).get("Retry-After")
+        try:
+            delay = float(retry_after) if retry_after else self._retry_sleep
+        except (TypeError, ValueError):
+            delay = self._retry_sleep
+        if delay > 0:
+            time.sleep(delay)
 
     def send_message(
         self,
@@ -70,9 +97,10 @@ class TelegramClient:
         chat_id: str,
         use_markdown: bool = False,
         chunk_sleep: float = 0,
-    ) -> None:
+    ) -> bool:
         if not chat_id:
-            return
+            return False
+        ok = True
         for i in range(0, len(text), self._limit):
             chunk = text[i : i + self._limit]
             data: Dict[str, Any] = {"chat_id": chat_id, "text": chunk}
@@ -80,9 +108,12 @@ class TelegramClient:
                 data["parse_mode"] = "Markdown"
             res = self._post("sendMessage", data=data)
             if use_markdown and (not res or res.status_code != 200):
-                self._post("sendMessage", data={"chat_id": chat_id, "text": chunk})
+                res = self._post("sendMessage", data={"chat_id": chat_id, "text": chunk})
+            if not res or res.status_code != 200:
+                ok = False
             if chunk_sleep > 0:
                 time.sleep(chunk_sleep)
+        return ok
 
     def send_document(
         self,
@@ -90,11 +121,12 @@ class TelegramClient:
         filename: str,
         caption: str,
         chat_id: str,
-    ) -> None:
+    ) -> bool:
         if not chat_id:
-            return
+            return False
         files = {"document": (filename, file_content.encode("utf-8"))}
-        self._post("sendDocument", data={"chat_id": chat_id, "caption": caption}, files=files)
+        res = self._post("sendDocument", data={"chat_id": chat_id, "caption": caption}, files=files)
+        return bool(res and res.status_code == 200)
 
     def send_visual_diff(
         self,
@@ -104,11 +136,11 @@ class TelegramClient:
         name: str,
         pkg_id: str,
         geo: str,
-    ) -> None:
+    ) -> bool:
         if not old_url or not new_url or old_url.lower() == "nan" or new_url.lower() == "nan":
-            return
+            return False
         if not chat_id:
-            return
+            return False
         media = [
             {
                 "type": "photo",
@@ -123,7 +155,8 @@ class TelegramClient:
                 "caption": f"🟢 <b>СТАЛО</b> | {name}\n📦 {pkg_id} [{geo}]",
             },
         ]
-        self._post("sendMediaGroup", json={"chat_id": chat_id, "media": media})
+        res = self._post("sendMediaGroup", json={"chat_id": chat_id, "media": media})
+        return bool(res and res.status_code == 200)
 
     def send_screenshots(
         self,
@@ -132,11 +165,11 @@ class TelegramClient:
         pkg_id: str,
         geo: str,
         max_count: int = 10,
-    ) -> None:
+    ) -> bool:
         if not screenshots:
-            return
+            return False
         if not chat_id:
-            return
+            return False
         geo_upper = geo.upper()
         media = [
             {
@@ -147,7 +180,8 @@ class TelegramClient:
             }
             for idx, s in enumerate(screenshots[:max_count])
         ]
-        self._post("sendMediaGroup", json={"chat_id": chat_id, "media": media})
+        res = self._post("sendMediaGroup", json={"chat_id": chat_id, "media": media})
+        return bool(res and res.status_code == 200)
 
     def send_ai_analysis(
         self,
@@ -156,14 +190,18 @@ class TelegramClient:
         prefix: str = "🤖 Анализ:\n\n",
         chunk_limit: Optional[int] = None,
         chunk_sleep: float = 1,
-    ) -> None:
+    ) -> bool:
         clean_ai = clean_ai_for_telegram(ai_text)
         full_text = f"{prefix}{clean_ai}"
         limit = chunk_limit if chunk_limit is not None else self._limit
         if not chat_id:
-            return
+            return False
+        ok = True
         for chunk_start in range(0, len(full_text), limit):
             chunk = full_text[chunk_start : chunk_start + limit]
-            self._post("sendMessage", data={"chat_id": chat_id, "text": chunk})
+            res = self._post("sendMessage", data={"chat_id": chat_id, "text": chunk})
+            if not res or res.status_code != 200:
+                ok = False
             if chunk_sleep > 0:
                 time.sleep(chunk_sleep)
+        return ok
