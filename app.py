@@ -354,6 +354,18 @@ def save_apps_or_show_error(data, *, updated_keys=None, deleted_keys=None):
     return False
 
 
+def repo_load_errors(repository):
+    return getattr(repository, "load_errors", {}) or {}
+
+
+def repo_load_error_message(repository, load_errors):
+    if hasattr(repository, "load_error_message"):
+        return repository.load_error_message()
+    if load_errors:
+        return "; ".join(f"{name}: {message}" for name, message in load_errors.items())
+    return getattr(repository, "last_error", "") or "Неизвестная ошибка"
+
+
 def run_check_for_item(key, info, user_reports_dict, single_mode=False, skip_ai=False):
     updates = 0
     changed = []
@@ -443,9 +455,10 @@ st.title("🚀 ASO Monitor PRO")
 st.caption("Поддерживает Google Play (ID: com.app.name) и App Store (ID: 123456789)")
 render_flash()
 db = repo.load_apps()
-if repo.load_errors:
-    st.error(f"Не удалось загрузить данные из Google Sheets: {repo.load_error_message()}")
-    if "apps" in repo.load_errors:
+load_errors = repo_load_errors(repo)
+if load_errors:
+    st.error(f"Не удалось загрузить данные из Google Sheets: {repo_load_error_message(repo, load_errors)}")
+    if "apps" in load_errors:
         st.stop()
 
 # --- САЙДБАР ---
