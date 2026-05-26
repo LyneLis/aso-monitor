@@ -1,11 +1,13 @@
 import json
-from typing import Any, Callable, Dict, Optional
+from datetime import datetime, timezone
+from typing import Any, Callable, Dict, Iterable, Optional, Tuple
 
 from core.config import Settings
 from sheets.serialization import storage_key, tracked_info_from_row
 
 
 ConnectionFactory = Callable[[str], Any]
+MINSK_TZ_NAME = "Europe/Minsk"
 
 
 def _json_cell(value: Any) -> str:
@@ -21,6 +23,40 @@ def _open_psycopg_connection(database_url: str) -> Any:
     from psycopg.rows import dict_row
 
     return psycopg.connect(database_url, row_factory=dict_row)
+
+
+def _platform_for_package(package_id: str) -> str:
+    return "ios" if str(package_id).isdigit() else "android"
+
+
+def _parse_minsk_timestamp(value: Any) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        from zoneinfo import ZoneInfo
+
+        parsed = datetime.strptime(str(value).strip(), "%d.%m.%Y %H:%M:%S")
+        return parsed.replace(tzinfo=ZoneInfo(MINSK_TZ_NAME))
+    except Exception:
+        return None
+
+
+def _created_at_from_log(log_entry: Dict[str, Any]) -> datetime:
+    return _parse_minsk_timestamp(log_entry.get("time")) or datetime.now(timezone.utc)
+
+
+def _normalize_chat_id(chat_id: Any) -> str:
+    value = str(chat_id or "").strip()
+    if not value or value.lower() == "nan":
+        return "unassigned"
+    return value
+
+
+def _user_name_for_chat_id(chat_id: str, known_users: Dict[str, Any]) -> str:
+    for name, known_chat_id in known_users.items():
+        if str(known_chat_id) == str(chat_id):
+            return str(name)
+    return f"User {chat_id}"
 
 
 class PostgresAppsRepository:
@@ -126,3 +162,164 @@ class PostgresAppsRepository:
                 key = info.pop("_storage_key", storage_key(info))
                 data[key] = info
         return data
+
+    def upsert_user(self, name: str, chat_id: Any) -> None:
+        query = """
+            insert into public.monitor_users (name, chat_id)
+            values (%s, %s)
+            on conflict (chat_id) do update
+            set name = excluded.name
+        """
+        with self._connect() as conn:
+            conn.execute(query, (str(name), _normalize_chat_id(chat_id)))
+
+    def upsert_tracked_info(self, info: Dict[str, Any], *, owner_name: Optional[str] = None) -> Tuple[str, str]:
+        package_id = str(info["package_id"]).strip()
+        geo = str(info["geo"]).strip()
+        chat_id = _normalize_chat_id(info.get("chat_id"))
+        name = owner_name or f"User {chat_id}"
+        current = info.get("current", {})
+        check_log = list(info.get("check_log") or [])
+        last_log = check_log[-1] if check_log else {}
+        last_checked_at = _parse_minsk_timestamp(last_log.get("time"))
+        last_status = last_log.get("status")
+
+        with self._connect() as conn:
+            user_row = conn.execute(
+                """
+                    insert into public.monitor_users (name, chat_id)
+                    values (%s, %s)
+                    on conflict (chat_id) do update
+                    set name = excluded.name
+                    returning chat_id
+                """,
+                (name, chat_id),
+            ).fetchone()
+            owner_chat_id = user_row["chat_id"]
+
+            app_row = conn.execute(
+                """
+                    insert into public.tracked_apps (package_id, platform, owner_chat_id, active)
+                    values (%s, %s, %s, true)
+                    on conflict (package_id, owner_chat_id) do update
+                    set platform = excluded.platform,
+                        active = true
+                    returning id
+                """,
+                (package_id, _platform_for_package(package_id), owner_chat_id),
+            ).fetchone()
+            app_id = app_row["id"]
+
+            locale_row = conn.execute(
+                """
+                    insert into public.tracked_locales (
+                        app_id, geo, title, summary, description, icon, header_image,
+                        screenshots, last_checked_at, last_status, active
+                    )
+                    values (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, true)
+                    on conflict (app_id, geo) do update
+                    set title = excluded.title,
+                        summary = excluded.summary,
+                        description = excluded.description,
+                        icon = excluded.icon,
+                        header_image = excluded.header_image,
+                        screenshots = excluded.screenshots,
+                        last_checked_at = excluded.last_checked_at,
+                        last_status = excluded.last_status,
+                        active = true
+                    returning id
+                """,
+                (
+                    app_id,
+                    geo,
+                    current.get("title", ""),
+                    current.get("summary", ""),
+                    current.get("description", ""),
+                    current.get("icon", ""),
+                    current.get("header_image", ""),
+                    json.dumps(current.get("screenshots", []), ensure_ascii=False),
+                    last_checked_at,
+                    last_status,
+                ),
+            ).fetchone()
+            locale_id = locale_row["id"]
+
+            conn.execute(
+                """
+                    insert into public.snapshots (
+                        locale_id, title, summary, description, icon, header_image,
+                        screenshots, source, captured_at
+                    )
+                    values (%s, %s, %s, %s, %s, %s, %s::jsonb, 'import', now())
+                """,
+                (
+                    locale_id,
+                    current.get("title", ""),
+                    current.get("summary", ""),
+                    current.get("description", ""),
+                    current.get("icon", ""),
+                    current.get("header_image", ""),
+                    json.dumps(current.get("screenshots", []), ensure_ascii=False),
+                ),
+            )
+
+            if check_log:
+                conn.execute("delete from public.check_logs where locale_id = %s", (locale_id,))
+                for log_entry in check_log[-5:]:
+                    conn.execute(
+                        """
+                            insert into public.check_logs (locale_id, status, error, created_at)
+                            values (%s, %s, %s, %s)
+                        """,
+                        (
+                            locale_id,
+                            str(log_entry.get("status", "")),
+                            log_entry.get("error"),
+                            _created_at_from_log(log_entry),
+                        ),
+                    )
+
+            audit_text = str(info.get("ai_audit") or "").strip()
+            if audit_text:
+                conn.execute(
+                    """
+                        insert into public.aso_audits (app_id, audit_text, source)
+                        values (%s, %s, 'import')
+                    """,
+                    (app_id, audit_text),
+                )
+
+        return str(app_id), str(locale_id)
+
+    def import_tracked_apps(self, data: Dict[str, Dict[str, Any]], *, users: Dict[str, Any]) -> Dict[str, int]:
+        for name, chat_id in users.items():
+            self.upsert_user(str(name), chat_id)
+
+        imported = 0
+        skipped = 0
+        for info in data.values():
+            if not info:
+                skipped += 1
+                continue
+            chat_id = _normalize_chat_id(info.get("chat_id"))
+            owner_name = _user_name_for_chat_id(chat_id, users)
+            self.upsert_tracked_info(info, owner_name=owner_name)
+            imported += 1
+
+        return {"users": len(users), "locales": imported, "skipped": skipped}
+
+    def count_rows(self) -> Dict[str, int]:
+        tables: Iterable[str] = (
+            "monitor_users",
+            "tracked_apps",
+            "tracked_locales",
+            "snapshots",
+            "check_logs",
+            "aso_audits",
+        )
+        counts = {}
+        with self._connect() as conn:
+            for table in tables:
+                row = conn.execute(f"select count(*) as count from public.{table}").fetchone()
+                counts[table] = int(row["count"])
+        return counts
