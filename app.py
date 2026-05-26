@@ -6,17 +6,16 @@ from core import (
     GeminiClient,
     Settings,
     TelegramClient,
+    add_changed_locale_to_batch,
+    check_item_snapshots,
     clean_ai_for_telegram,
     current_dict_from_snapshot,
-    detect_changes_with_table_error,
     fetch_app_data,
     fill_missing_assets,
     format_changes_report,
     format_single_locale_report,
     get_minsk_time,
-    history_entry_from_snapshot,
     snapshot_from_current,
-    snapshot_from_fetch,
 )
 from sheets import StreamlitAppsRepository
 
@@ -41,19 +40,22 @@ def run_check_for_item(key, info, user_reports_dict, single_mode=False, skip_ai=
     updates = 0
     changed = []
     text_changes_payload = None
+    outcome = None
 
     try:
-        new_snap = snapshot_from_fetch(fetch_app_data(info["package_id"], info["geo"]))
         log_entry = {"time": get_minsk_time(), "status": "🟢 Ок"}
         old_snap, is_table_error = snapshot_from_current(info["current"])
 
-        result = detect_changes_with_table_error(
+        outcome = check_item_snapshots(
+            info["package_id"],
+            info["geo"],
             old_snap,
-            new_snap,
             info.get("history", []),
             is_table_error,
             label_style="web",
         )
+        new_snap = outcome.new_snapshot
+        result = outcome.result
 
         if result.has_changes:
             updates = 1
@@ -115,7 +117,7 @@ def run_check_for_item(key, info, user_reports_dict, single_mode=False, skip_ai=
         info.setdefault("check_log", []).append(log_entry)
         info["check_log"] = info["check_log"][-5:]
 
-    return updates, changed, text_changes_payload
+    return updates, changed, text_changes_payload, outcome
 
 
 # --- ИНТЕРФЕЙС ---
@@ -187,33 +189,21 @@ if st.button("🔍 Проверить вообще всё", type="primary"):
         batched_alerts = {}
         
         for key, info in db.items():
-            old_icon = info['current'].get('icon', '')
-            old_header = info['current'].get('header_image', '')
-            
-            u, changed_list, txt_payload = run_check_for_item(key, info, {}, single_mode=False, skip_ai=True)
+            u, changed_list, txt_payload, outcome = run_check_for_item(key, info, {}, single_mode=False, skip_ai=True)
             updates_count += u
             
-            if u > 0:
-                p_id = info['package_id']
-                c_id = info['chat_id']
-                geo = info['geo']
-                is_ios = str(p_id).isdigit()
-                b_key = (p_id, c_id, is_ios)
-                
-                if b_key not in batched_alerts:
-                    batched_alerts[b_key] = {'changes': {}, 'texts': {}, 'visuals': []}
-                
-                batched_alerts[b_key]['changes'][geo] = changed_list
-                
-                if "Иконка" in changed_list:
-                    batched_alerts[b_key]['visuals'].append({'type': 'diff', 'name': 'Иконка', 'old': old_icon, 'new': info['current'].get('icon', ''), 'geo': geo})
-                if "Feature Graphic" in changed_list:
-                    batched_alerts[b_key]['visuals'].append({'type': 'diff', 'name': 'Feature Graphic', 'old': old_header, 'new': info['current'].get('header_image', ''), 'geo': geo})
-                if "Скриншоты" in changed_list:
-                    batched_alerts[b_key]['visuals'].append({'type': 'screens', 'screens': info['current'].get('screenshots', []), 'geo': geo})
-                
-                if txt_payload:
-                    batched_alerts[b_key]['texts'][geo] = txt_payload
+            if u > 0 and outcome:
+                add_changed_locale_to_batch(
+                    batched_alerts,
+                    info['package_id'],
+                    info['chat_id'],
+                    info['geo'],
+                    outcome.old_snapshot,
+                    outcome.new_snapshot,
+                    changed_list,
+                    txt_payload,
+                    is_rollback=outcome.result.is_rollback,
+                )
 
         for (pkg_id, c_id, is_ios), data in batched_alerts.items():
             os_icon = "🍎" if is_ios else "🤖"
@@ -298,7 +288,7 @@ def render_app_groups(app_groups, os_icon):
                             upd = 0
                             batched_ai = {}
                             for k in keys:
-                                u, _, txt_payload = run_check_for_item(k, db[k], {}, single_mode=False, skip_ai=True)
+                                u, _, txt_payload, _ = run_check_for_item(k, db[k], {}, single_mode=False, skip_ai=True)
                                 upd += u
                                 if txt_payload: batched_ai[db[k]['geo']] = txt_payload
                             if upd > 0 and batched_ai:

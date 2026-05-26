@@ -16,6 +16,7 @@ from core.compare import (
 )
 from core.config import DEFAULT_SPREADSHEET_URL, Settings
 from core.locales import GP_LOCALES_RAW
+from core.monitoring import ItemCheckOutcome, add_changed_locale_to_batch, check_item_snapshots
 from core.prompts import ASO_PROMPT, CURRENT_ASO_PROMPT
 from core.subtitle import decode_apple_subtitle
 from core.time_utils import get_minsk_time
@@ -36,8 +37,11 @@ __all__ = [
     "DEFAULT_SPREADSHEET_URL",
     "GP_LOCALES_RAW",
     "GeminiClient",
+    "ItemCheckOutcome",
     "Settings",
     "TelegramClient",
+    "add_changed_locale_to_batch",
+    "check_item_snapshots",
     "clean_ai_for_telegram",
     "clean_val",
     "current_dict_from_snapshot",

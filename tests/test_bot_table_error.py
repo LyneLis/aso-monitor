@@ -38,20 +38,17 @@ def test_check_apps_repairs_table_error(monkeypatch):
     monkeypatch.setattr(bot, "GspreadAppsRepository", FakeRepo)
     monkeypatch.setattr(bot, "get_minsk_time", lambda: "01.01.2026 12:00:00")
     monkeypatch.setattr(bot.time, "sleep", lambda _: None)
-    monkeypatch.setattr(
-        bot,
-        "fetch_app_data",
-        lambda package_id, geo: {
+    def fake_fetcher(package_id, geo):
+        return {
             "title": "Fixed title",
             "summary": "Fixed summary",
             "description": "Fixed description",
             "icon": "https://example.com/icon.png",
             "headerImage": "https://example.com/header.png",
             "screenshots": ["https://example.com/screen.png"],
-        },
-    )
+        }
 
-    bot.check_apps()
+    bot.check_apps(fetcher=fake_fetcher)
 
     assert len(FakeRepo.updated_rows) == 1
     row_index, saved_row = FakeRepo.updated_rows[0]

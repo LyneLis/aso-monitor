@@ -5,12 +5,11 @@ from core import (
     GeminiClient,
     Settings,
     TelegramClient,
-    detect_changes_with_table_error,
-    fetch_app_data,
+    add_changed_locale_to_batch,
+    check_item_snapshots,
     format_changes_report,
     get_minsk_time,
     history_entry_from_snapshot,
-    snapshot_from_fetch,
     snapshot_from_row,
 )
 from core.telegram import BOT_CHUNK_LIMIT
@@ -30,7 +29,7 @@ def write_snapshot_to_row(row, snap):
     row["screenshots"] = json.dumps(snap.screenshots, ensure_ascii=False)
 
 
-def check_apps():
+def check_apps(fetcher=None):
     print(f"--- СТАРТ ПРОВЕРКИ v3.23 (Интервал 12ч) ({get_minsk_time()}) ---")
     repo = GspreadAppsRepository(settings)
     try:
@@ -57,7 +56,6 @@ def check_apps():
         full_geo = str(row.get("geo", "us")).strip()
 
         try:
-            res = fetch_app_data(p_id, full_geo)
             old_scr, history, current_log = GspreadAppsRepository.parse_row_lists(row)
 
             old_snap, is_table_error = snapshot_from_row(
@@ -68,18 +66,21 @@ def check_apps():
                 row.get("header_image"),
                 old_scr,
             )
-            new_snap = snapshot_from_fetch(res)
             is_ios = str(p_id).isdigit()
 
-            result = detect_changes_with_table_error(
+            outcome = check_item_snapshots(
+                p_id,
+                full_geo,
                 old_snap,
-                new_snap,
                 history,
                 is_table_error,
                 label_style="bot",
                 is_ios=is_ios,
                 history_limit=3,
+                fetcher=fetcher,
             )
+            new_snap = outcome.new_snapshot
+            result = outcome.result
 
             if result.has_changes:
                 changes = result.changed
@@ -91,39 +92,17 @@ def check_apps():
 
                 if has_owner:
                     user_stats[c_id]["updated"] += 1
-                    b_key = (p_id, c_id, is_ios)
-                    if b_key not in batched_alerts:
-                        batched_alerts[b_key] = {"changes": {}, "texts": {}, "visuals": [], "is_rollback": False}
-
-                    batched_alerts[b_key]["changes"][full_geo] = changes
-                    if result.is_rollback:
-                        batched_alerts[b_key]["is_rollback"] = True
-
-                    if "Иконка" in changes:
-                        batched_alerts[b_key]["visuals"].append({
-                            "type": "diff",
-                            "name": "Иконка",
-                            "old": old_snap.icon,
-                            "new": new_snap.icon,
-                            "geo": full_geo,
-                        })
-                    if "Feature Graphic" in changes:
-                        batched_alerts[b_key]["visuals"].append({
-                            "type": "diff",
-                            "name": "Feature Graphic",
-                            "old": old_snap.header_image,
-                            "new": new_snap.header_image,
-                            "geo": full_geo,
-                        })
-                    if "Скриншоты" in changes and new_snap.screenshots:
-                        batched_alerts[b_key]["visuals"].append({
-                            "type": "screens",
-                            "screens": new_snap.screenshots,
-                            "geo": full_geo,
-                        })
-
-                    if result.text_payload:
-                        batched_alerts[b_key]["texts"][full_geo] = result.text_payload
+                    add_changed_locale_to_batch(
+                        batched_alerts,
+                        p_id,
+                        c_id,
+                        full_geo,
+                        old_snap,
+                        new_snap,
+                        changes,
+                        result.text_payload,
+                        is_rollback=result.is_rollback,
+                    )
 
                 write_snapshot_to_row(row, new_snap)
                 history.append(history_entry_from_snapshot(old_snap, get_minsk_time()))
