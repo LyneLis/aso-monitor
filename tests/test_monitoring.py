@@ -61,6 +61,39 @@ def test_check_item_snapshots_preserves_ios_summary_when_web_subtitle_unavailabl
     assert outcome.changed == []
 
 
+def test_check_item_snapshots_preserves_ios_screenshots_when_web_assets_unavailable():
+    old = AppSnapshot(
+        title="App",
+        summary="Subtitle",
+        description="Description",
+        screenshots=["https://example.com/old-screen.jpg"],
+    )
+
+    def fetcher(package_id, geo):
+        return {
+            "title": "App",
+            "summary": "Subtitle",
+            "description": "Description",
+            "icon": "",
+            "headerImage": "",
+            "screenshots": ["https://example.com/fallback-screen.jpg"],
+            "screenshots_unavailable": True,
+        }
+
+    outcome = check_item_snapshots(
+        "123456789",
+        "en-US",
+        old,
+        [],
+        False,
+        label_style="bot",
+        fetcher=fetcher,
+    )
+
+    assert outcome.new_snapshot.screenshots == ["https://example.com/old-screen.jpg"]
+    assert "Скриншоты" not in outcome.changed
+
+
 def test_add_changed_locale_to_batch_collects_texts_and_visuals():
     batched = {}
     old = AppSnapshot(icon="old-icon", header_image="old-header", screenshots=["old-screen"])

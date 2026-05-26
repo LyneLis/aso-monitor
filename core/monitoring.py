@@ -52,6 +52,8 @@ def check_item_snapshots(
     new_snapshot = snapshot_from_fetch(fetched)
     if is_ios_package and fetched.get("summary_unavailable"):
         new_snapshot.summary = old_snapshot.summary
+    if is_ios_package and fetched.get("screenshots_unavailable"):
+        new_snapshot.screenshots = old_snapshot.screenshots
 
     result = detect_changes_with_table_error(
         old_snapshot,

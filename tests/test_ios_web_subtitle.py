@@ -101,3 +101,29 @@ def test_fetch_ios_app_data_marks_subtitle_unavailable_on_web_error(monkeypatch)
 
     assert result["summary"] == ""
     assert result["summary_unavailable"] is True
+    assert result["screenshots_unavailable"] is True
+
+
+def test_fetch_ios_app_data_marks_screenshots_unavailable_on_web_429(monkeypatch):
+    def fake_get(url, **kwargs):
+        if "itunes.apple.com" in url:
+            return FakeResponse(
+                json_data={
+                    "resultCount": 1,
+                    "results": [
+                        {
+                            "trackName": "Test App",
+                            "description": "Description",
+                            "screenshotUrls": ["https://example.com/lookup-screen.jpg"],
+                        }
+                    ],
+                }
+            )
+        return FakeResponse(text="Too Many Requests", status_code=429)
+
+    monkeypatch.setattr("core.parsing.requests.get", fake_get)
+
+    result = _fetch_ios_app_data("123456789", "en-US", "en-US", "US")
+
+    assert result["screenshots"] == ["https://example.com/lookup-screen.jpg"]
+    assert result["screenshots_unavailable"] is True
