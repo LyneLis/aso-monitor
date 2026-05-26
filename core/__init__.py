@@ -15,11 +15,9 @@ from core.compare import (
     snapshot_from_row,
 )
 from core.config import DEFAULT_SPREADSHEET_URL, Settings
-from core.audit_state import group_ai_audit, set_group_ai_audit
 from core.locales import GP_LOCALES_RAW
 from core.monitoring import ItemCheckOutcome, add_changed_locale_to_batch, check_item_snapshots
 from core.prompts import ASO_PROMPT, CURRENT_ASO_PROMPT
-from core.site_checks import run_site_check_for_item
 from core.subtitle import decode_apple_subtitle
 from core.time_utils import get_minsk_time
 
@@ -59,9 +57,6 @@ __all__ = [
     "fetch_app_data",
     "format_changes_report",
     "get_minsk_time",
-    "group_ai_audit",
-    "run_site_check_for_item",
-    "set_group_ai_audit",
 ]
 
 

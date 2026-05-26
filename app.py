@@ -13,10 +13,9 @@ from core import (
     format_changes_report,
     format_single_locale_report,
     get_minsk_time,
-    group_ai_audit,
-    run_site_check_for_item,
-    set_group_ai_audit,
 )
+from core.audit_state import group_ai_audit, set_group_ai_audit
+from core.site_checks import run_site_check_for_item
 from sheets import StreamlitAppsRepository
 
 st.set_page_config(page_title="ASO Monitor PRO", layout="wide")
