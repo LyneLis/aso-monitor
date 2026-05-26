@@ -540,11 +540,7 @@ for key, info in db.items():
 android_apps = filter_app_groups(android_apps, search_query)
 ios_apps = filter_app_groups(ios_apps, search_query)
 
-render_overview(android_apps, ios_apps)
-render_health_panel(visible_db)
-st.divider()
-
-tab_android, tab_ios = st.tabs(["🤖 Android (Google Play)", "🍎 iOS (App Store)"])
+tab_apps, tab_service = st.tabs(["📱 Приложения", "⚙️ Состояние"])
 
 def render_app_groups(app_groups, os_icon):
     if not app_groups:
@@ -683,8 +679,16 @@ def render_app_groups(app_groups, os_icon):
                             st.session_state[confirm_key] = True
                             st.rerun()
 
-with tab_android:
-    render_app_groups(android_apps, "🤖")
+with tab_apps:
+    render_overview(android_apps, ios_apps)
+    st.divider()
+    tab_android, tab_ios = st.tabs(["🤖 Android (Google Play)", "🍎 iOS (App Store)"])
 
-with tab_ios:
-    render_app_groups(ios_apps, "🍎")
+    with tab_android:
+        render_app_groups(android_apps, "🤖")
+
+    with tab_ios:
+        render_app_groups(ios_apps, "🍎")
+
+with tab_service:
+    render_health_panel(visible_db)
