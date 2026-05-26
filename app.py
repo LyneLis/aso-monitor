@@ -116,6 +116,80 @@ def is_problem_info(info):
     return is_error_status(status) or is_stale_info(info)
 
 
+def status_priority_for_info(info, now=None):
+    status = latest_log_status(info)
+    if is_error_status(status):
+        return 0
+    if is_stale_info(info, now):
+        return 1
+    if is_change_status(status):
+        return 2
+    return 3
+
+
+def locale_status_label(info, now=None):
+    status = latest_log_status(info)
+    if is_error_status(status):
+        return "🔴 Ошибка"
+    if not info.get("check_log"):
+        return "🟠 Без проверки"
+    if is_stale_info(info, now):
+        return "🟠 Давно"
+    if is_change_status(status):
+        return "🔵 Изменение"
+    return "🟢 Ок"
+
+
+def group_status_summary(keys, now=None):
+    current_time = now or current_minsk_datetime()
+    infos = [db[key] for key in keys]
+    errors = sum(1 for info in infos if is_error_status(latest_log_status(info)))
+    stale = sum(1 for info in infos if is_stale_info(info, current_time))
+    changes = sum(1 for info in infos if is_change_status(latest_log_status(info)))
+
+    if errors:
+        return f"🔴 Ошибка: {errors}"
+    if stale:
+        return f"🟠 Проверить: {stale}"
+    if changes:
+        return f"🔵 Изменение: {changes}"
+    return "🟢 Ок"
+
+
+def group_status_priority(keys, now=None):
+    current_time = now or current_minsk_datetime()
+    return min(status_priority_for_info(db[key], current_time) for key in keys)
+
+
+def latest_group_check_label(keys):
+    latest = None
+    latest_info = None
+    for key in keys:
+        checked_at = latest_log_time(db[key])
+        if checked_at and (latest is None or checked_at > latest):
+            latest = checked_at
+            latest_info = db[key]
+    if not latest or not latest_info:
+        return "Проверок еще не было"
+    return f"Последняя проверка: {latest.strftime('%d.%m.%Y %H:%M:%S')} · {latest_info['geo'].upper()}"
+
+
+def attention_locales_label(keys, now=None):
+    current_time = now or current_minsk_datetime()
+    problem_geos = [
+        db[key]["geo"].upper()
+        for key in keys
+        if status_priority_for_info(db[key], current_time) < 2
+    ]
+    if not problem_geos:
+        return ""
+    shown = ", ".join(problem_geos[:4])
+    hidden = len(problem_geos) - 4
+    if hidden > 0:
+        shown += f" +{hidden}"
+    return f"Требуют внимания: {shown}"
+
+
 def flatten_log_entries(data, predicate):
     rows = []
     for info in data.values():
@@ -549,19 +623,29 @@ def render_app_groups(app_groups, os_icon):
         
     sorted_groups = sorted(
         app_groups.items(),
-        key=lambda item: (db[item[1][0]]["current"].get("title") or item[0][0]).lower(),
+        key=lambda item: (
+            group_status_priority(item[1]),
+            (db[item[1][0]]["current"].get("title") or item[0][0]).lower(),
+        ),
     )
     for (pkg_id, chat_id), keys in sorted_groups:
         owner_name = owner_name_for(chat_id)
         first_info = db[keys[0]]
         main_title = first_info['current'].get('title') or pkg_id
         main_icon = first_info['current'].get('icon')
+        status_summary = group_status_summary(keys)
+        attention_label = attention_locales_label(keys)
 
-        with st.expander(f"{os_icon} {main_title} · {pkg_id} · {owner_name} · {len(keys)} лок."):
+        with st.expander(f"{status_summary} · {os_icon} {main_title} · {pkg_id} · {owner_name} · {len(keys)} лок."):
             col_img, col_space, col_btn = st.columns([1, 2, 4])
             with col_img:
                 if main_icon and main_icon != 'nan': st.image(main_icon, width=80)
                 st.caption(f"{len(keys)} локалей")
+            with col_space:
+                st.write(f"**{status_summary}**")
+                st.caption(latest_group_check_label(keys))
+                if attention_label:
+                    st.caption(attention_label)
             
             with col_btn:
                 col1, col2 = st.columns(2)
@@ -637,7 +721,10 @@ def render_app_groups(app_groups, os_icon):
                 with st.expander("📊 Сохраненный ИИ-Аудит (Текущая стратегия)"):
                     st.markdown(first_info['ai_audit'])
 
-            tabs_loc = st.tabs([GP_LOCALES_RAW.get(db[k]['geo'], db[k]['geo']) for k in keys])
+            tabs_loc = st.tabs([
+                f"{GP_LOCALES_RAW.get(db[k]['geo'], db[k]['geo'])} · {locale_status_label(db[k])}"
+                for k in keys
+            ])
             for i, k in enumerate(keys):
                 with tabs_loc[i]:
                     info = db[k]
@@ -645,7 +732,7 @@ def render_app_groups(app_groups, os_icon):
                     with c1:
                         if info['current'].get('icon'): st.image(info['current']['icon'], width=70)
                     with c2:
-                        st.write(f"**Локаль:** `{info['geo']}`")
+                        st.write(f"**Локаль:** `{info['geo']}` · {locale_status_label(info)}")
                         st.caption(f"Последняя проверка: {latest_log_label(info)}")
                         title = info['current'].get('title')
                         summary = info['current'].get('summary')
