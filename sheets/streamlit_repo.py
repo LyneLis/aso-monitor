@@ -10,6 +10,7 @@ class StreamlitAppsRepository:
         self._conn = connection
         self.available = available
         self.last_error: Optional[str] = None
+        self.load_errors: Dict[str, str] = {}
 
     @classmethod
     def connect(cls) -> "StreamlitAppsRepository":
@@ -25,20 +26,38 @@ class StreamlitAppsRepository:
 
     def load_users(self) -> Dict[str, Any]:
         if not self.available:
+            self._record_load_error("users", "Нет подключения к Google Sheets.")
             return {}
         try:
             df = self._conn.read(worksheet="users", ttl=0)
+            self._clear_load_error("users")
             return dict(zip(df["name"], df["chat_id"]))
-        except Exception:
+        except Exception as e:
+            self._record_load_error("users", e)
             return {}
 
     def load_apps(self) -> Dict[str, Dict[str, Any]]:
         if not self.available:
+            self._record_load_error("apps", "Нет подключения к Google Sheets.")
             return {}
         try:
-            return self._read_apps()
-        except Exception:
+            apps = self._read_apps()
+            self._clear_load_error("apps")
+            return apps
+        except Exception as e:
+            self._record_load_error("apps", e)
             return {}
+
+    def load_error_message(self) -> str:
+        return "; ".join(f"{name}: {message}" for name, message in self.load_errors.items())
+
+    def _record_load_error(self, source: str, error: Any) -> None:
+        message = str(error)
+        self.load_errors[source] = message
+        self.last_error = message
+
+    def _clear_load_error(self, source: str) -> None:
+        self.load_errors.pop(source, None)
 
     def _read_apps(self) -> Dict[str, Dict[str, Any]]:
         df = self._conn.read(worksheet="apps", ttl=0)

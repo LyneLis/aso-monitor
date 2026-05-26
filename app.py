@@ -443,6 +443,10 @@ st.title("🚀 ASO Monitor PRO")
 st.caption("Поддерживает Google Play (ID: com.app.name) и App Store (ID: 123456789)")
 render_flash()
 db = repo.load_apps()
+if repo.load_errors:
+    st.error(f"Не удалось загрузить данные из Google Sheets: {repo.load_error_message()}")
+    if "apps" in repo.load_errors:
+        st.stop()
 
 # --- САЙДБАР ---
 with st.sidebar:

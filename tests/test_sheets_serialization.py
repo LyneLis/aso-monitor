@@ -47,6 +47,56 @@ def test_streamlit_repo_save_records_missing_connection():
     assert repo.last_error == "Нет подключения к Google Sheets."
 
 
+def test_streamlit_repo_load_users_records_error():
+    class BadConnection:
+        def read(self, worksheet, ttl):
+            assert worksheet == "users"
+            raise RuntimeError("users read failed")
+
+    repo = StreamlitAppsRepository(BadConnection(), True)
+
+    assert repo.load_users() == {}
+    assert repo.load_errors == {"users": "users read failed"}
+    assert repo.load_error_message() == "users: users read failed"
+
+
+def test_streamlit_repo_load_apps_records_error():
+    class BadConnection:
+        def read(self, worksheet, ttl):
+            assert worksheet == "apps"
+            raise RuntimeError("apps read failed")
+
+    repo = StreamlitAppsRepository(BadConnection(), True)
+
+    assert repo.load_apps() == {}
+    assert repo.load_errors == {"apps": "apps read failed"}
+    assert repo.load_error_message() == "apps: apps read failed"
+
+
+def test_streamlit_repo_load_apps_clears_previous_error():
+    info = tracked_info_from_row("com.app", "us", "1", title="A")
+
+    class Connection:
+        def __init__(self):
+            self.fail = True
+
+        def read(self, worksheet, ttl):
+            assert worksheet == "apps"
+            if self.fail:
+                raise RuntimeError("temporary read failed")
+            return pd.DataFrame([tracked_info_to_apps_row(info)])
+
+    conn = Connection()
+    repo = StreamlitAppsRepository(conn, True)
+
+    assert repo.load_apps() == {}
+    assert "apps" in repo.load_errors
+
+    conn.fail = False
+    assert repo.load_apps()["com.app_us_1"]["current"]["title"] == "A"
+    assert repo.load_errors == {}
+
+
 def test_streamlit_repo_save_merges_updated_keys_with_latest_sheet():
     remote_existing = tracked_info_from_row("com.app", "us", "1", title="Remote title", summary="Fresh")
     stale_existing = tracked_info_from_row("com.app", "us", "1", title="Local stale", summary="Old")
