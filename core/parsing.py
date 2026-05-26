@@ -122,6 +122,7 @@ def _fetch_ios_app_data(pkg_id: str, locale: str, l_code: str, c_code: str) -> d
     screens = data.get("screenshotUrls", []) or data.get("ipadScreenshotUrls", [])
     icon_url = data.get("artworkUrl512", data.get("artworkUrl100", "")).replace(".webp", ".jpg")
     subtitle = ""
+    subtitle_unavailable = False
 
     try:
         web_lang = _apple_web_lang(locale)
@@ -134,12 +135,17 @@ def _fetch_ios_app_data(pkg_id: str, locale: str, l_code: str, c_code: str) -> d
         if response.status_code == 200:
             response.encoding = "utf-8"
             subtitle, screens = _parse_ios_page_html(response.text, screens)
+        else:
+            subtitle_unavailable = True
+            print(f"⚠️ App Store HTML вернул HTTP {response.status_code} для {pkg_id} ({locale})")
     except Exception as e:
+        subtitle_unavailable = True
         print(f"⚠️ Ошибка парсера App Store HTML: {e}")
 
     return {
         "title": data.get("trackName", ""),
         "summary": subtitle or "",
+        "summary_unavailable": subtitle_unavailable,
         "description": data.get("description", ""),
         "icon": icon_url or "",
         "headerImage": "",

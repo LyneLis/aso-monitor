@@ -47,14 +47,19 @@ def check_item_snapshots(
 
         fetcher = fetch_app_data
 
-    new_snapshot = snapshot_from_fetch(fetcher(package_id, geo))
+    is_ios_package = is_ios or str(package_id).isdigit()
+    fetched = fetcher(package_id, geo)
+    new_snapshot = snapshot_from_fetch(fetched)
+    if is_ios_package and fetched.get("summary_unavailable"):
+        new_snapshot.summary = old_snapshot.summary
+
     result = detect_changes_with_table_error(
         old_snapshot,
         new_snapshot,
         history,
         is_table_error,
         label_style=label_style,
-        is_ios=is_ios,
+        is_ios=is_ios_package,
         history_limit=history_limit,
     )
     return ItemCheckOutcome(

@@ -76,3 +76,28 @@ def test_fetch_ios_app_data_does_not_fallback_to_lookup_subtitle(monkeypatch):
     result = _fetch_ios_app_data("123456789", "fr-CA", "fr-CA", "CA")
 
     assert result["summary"] == ""
+
+
+def test_fetch_ios_app_data_marks_subtitle_unavailable_on_web_error(monkeypatch):
+    def fake_get(url, **kwargs):
+        if "itunes.apple.com" in url:
+            return FakeResponse(
+                json_data={
+                    "resultCount": 1,
+                    "results": [
+                        {
+                            "trackName": "Test App",
+                            "description": "Description",
+                            "subtitle": "English subtitle from lookup",
+                        }
+                    ],
+                }
+            )
+        raise TimeoutError("web page timeout")
+
+    monkeypatch.setattr("core.parsing.requests.get", fake_get)
+
+    result = _fetch_ios_app_data("123456789", "fr-CA", "fr-CA", "CA")
+
+    assert result["summary"] == ""
+    assert result["summary_unavailable"] is True

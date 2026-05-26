@@ -86,3 +86,26 @@ def test_send_message_logs_request_error(monkeypatch, capsys):
 
     captured = capsys.readouterr()
     assert "Telegram sendMessage: ошибка запроса" in captured.out
+
+
+def test_send_message_retries_retryable_status(monkeypatch):
+    calls = []
+
+    class Response:
+        def __init__(self, status_code, text=""):
+            self.status_code = status_code
+            self.text = text
+            self.headers = {}
+
+    def fake_post(url, **kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return Response(500, "temporary error")
+        return Response(200)
+
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    client = TelegramClient(Settings(telegram_token="token"), retry_count=1, retry_sleep=0)
+
+    assert client.send_message("hello", "123") is True
+    assert len(calls) == 2

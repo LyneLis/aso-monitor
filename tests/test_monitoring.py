@@ -33,6 +33,34 @@ def test_check_item_snapshots_uses_fetcher_and_detects_change():
     assert outcome.new_snapshot.title == "New"
 
 
+def test_check_item_snapshots_preserves_ios_summary_when_web_subtitle_unavailable():
+    old = AppSnapshot(title="App", summary="Sous-titre", description="Description")
+
+    def fetcher(package_id, geo):
+        return {
+            "title": "App",
+            "summary": "",
+            "summary_unavailable": True,
+            "description": "Description",
+            "icon": "",
+            "headerImage": "",
+            "screenshots": [],
+        }
+
+    outcome = check_item_snapshots(
+        "123456789",
+        "fr-CA",
+        old,
+        [],
+        False,
+        label_style="bot",
+        fetcher=fetcher,
+    )
+
+    assert outcome.new_snapshot.summary == "Sous-titre"
+    assert outcome.changed == []
+
+
 def test_add_changed_locale_to_batch_collects_texts_and_visuals():
     batched = {}
     old = AppSnapshot(icon="old-icon", header_image="old-header", screenshots=["old-screen"])
