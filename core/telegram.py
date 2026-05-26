@@ -171,6 +171,11 @@ class TelegramClient:
         if not chat_id:
             return False
         geo_upper = geo.upper()
+        limited_screenshots = screenshots[:max_count]
+
+        if len(limited_screenshots) == 1:
+            return self._send_single_screenshot(chat_id, limited_screenshots[0], pkg_id, geo_upper, 1, 1)
+
         media = [
             {
                 "type": "photo",
@@ -178,9 +183,37 @@ class TelegramClient:
                 "parse_mode": "HTML",
                 "caption": f"📱 Скриншот {pkg_id} [{geo_upper}]" if idx == 0 else "",
             }
-            for idx, s in enumerate(screenshots[:max_count])
+            for idx, s in enumerate(limited_screenshots)
         ]
         res = self._post("sendMediaGroup", json={"chat_id": chat_id, "media": media})
+        if res and res.status_code == 200:
+            return True
+
+        sent_any = False
+        for idx, screenshot in enumerate(limited_screenshots, start=1):
+            sent_any = self._send_single_screenshot(
+                chat_id,
+                screenshot,
+                pkg_id,
+                geo_upper,
+                idx,
+                len(limited_screenshots),
+            ) or sent_any
+        return sent_any
+
+    def _send_single_screenshot(
+        self,
+        chat_id: str,
+        screenshot: str,
+        pkg_id: str,
+        geo_upper: str,
+        index: int,
+        total: int,
+    ) -> bool:
+        if not screenshot:
+            return False
+        caption = f"📱 Скриншот {index}/{total} {pkg_id} [{geo_upper}]"
+        res = self._post("sendPhoto", data={"chat_id": chat_id, "photo": screenshot, "caption": caption})
         return bool(res and res.status_code == 200)
 
     def send_ai_analysis(

@@ -109,3 +109,52 @@ def test_send_message_retries_retryable_status(monkeypatch):
 
     assert client.send_message("hello", "123") is True
     assert len(calls) == 2
+
+
+def test_send_screenshots_uses_single_photo_for_one_image(monkeypatch):
+    calls = []
+
+    class Response:
+        status_code = 200
+        text = ""
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        return Response()
+
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    client = TelegramClient(Settings(telegram_token="token"))
+
+    assert client.send_screenshots("123", ["https://example.com/screen.jpg"], "app", "en-US") is True
+    assert len(calls) == 1
+    assert calls[0][0].endswith("/sendPhoto")
+    assert calls[0][1]["data"]["photo"] == "https://example.com/screen.jpg"
+
+
+def test_send_screenshots_falls_back_to_individual_photos(monkeypatch):
+    calls = []
+
+    class Response:
+        def __init__(self, status_code, text=""):
+            self.status_code = status_code
+            self.text = text
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        if url.endswith("/sendMediaGroup"):
+            return Response(400, "bad photo")
+        return Response(200)
+
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    client = TelegramClient(Settings(telegram_token="token"))
+
+    assert client.send_screenshots(
+        "123",
+        ["https://example.com/one.jpg", "https://example.com/two.jpg"],
+        "app",
+        "en-US",
+    ) is True
+    assert calls[0][0].endswith("/sendMediaGroup")
+    assert [call[0].split("/")[-1] for call in calls[1:]] == ["sendPhoto", "sendPhoto"]
