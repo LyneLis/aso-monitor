@@ -21,6 +21,15 @@ telegram = TelegramClient(settings, message_limit=BOT_CHUNK_LIMIT)
 gemini = GeminiClient(settings, verbose=True)
 
 
+def write_snapshot_to_row(row, snap):
+    row["title"] = snap.title
+    row["summary"] = snap.summary
+    row["description"] = snap.description
+    row["icon"] = snap.icon
+    row["header_image"] = snap.header_image
+    row["screenshots"] = json.dumps(snap.screenshots, ensure_ascii=False)
+
+
 def check_apps():
     print(f"--- СТАРТ ПРОВЕРКИ v3.23 (Интервал 12ч) ({get_minsk_time()}) ---")
     repo = GspreadAppsRepository(settings)
@@ -116,14 +125,12 @@ def check_apps():
                     if result.text_payload:
                         batched_alerts[b_key]["texts"][full_geo] = result.text_payload
 
-                row["title"] = new_snap.title
-                row["summary"] = new_snap.summary
-                row["description"] = new_snap.description
-                row["icon"] = new_snap.icon
-                row["header_image"] = new_snap.header_image
-                row["screenshots"] = json.dumps(new_snap.screenshots, ensure_ascii=False)
+                write_snapshot_to_row(row, new_snap)
                 history.append(history_entry_from_snapshot(old_snap, get_minsk_time()))
                 row["history"] = json.dumps(history[-5:], ensure_ascii=False)
+            elif result.is_table_error:
+                current_log.append({"time": get_minsk_time(), "status": "🟢 Авто: Исправление ошибки"})
+                write_snapshot_to_row(row, new_snap)
             else:
                 current_log.append({"time": get_minsk_time(), "status": "🟢 Авто: Без изменений"})
 

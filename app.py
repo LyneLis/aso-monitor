@@ -29,6 +29,14 @@ repo = StreamlitAppsRepository.connect()
 users_dict = repo.load_users()
 
 
+def save_apps_or_show_error(data):
+    if repo.save_apps(data):
+        return True
+    details = f" ({repo.last_error})" if repo.last_error else ""
+    st.error(f"Не удалось сохранить изменения в Google Sheets{details}")
+    return False
+
+
 def run_check_for_item(key, info, user_reports_dict, single_mode=False, skip_ai=False):
     updates = 0
     changed = []
@@ -166,9 +174,9 @@ with st.sidebar:
                             st.error(f"Ошибка: {geo} не найдено ({e})")
                 
             if success_added > 0:
-                repo.save_apps(db)
-                st.success(f"Успешно добавлено локалей: {success_added}")
-                st.rerun()
+                if save_apps_or_show_error(db):
+                    st.success(f"Успешно добавлено локалей: {success_added}")
+                    st.rerun()
         else:
             st.warning("Заполните ID, локали и пользователя!")
 
@@ -240,7 +248,8 @@ if st.button("🔍 Проверить вообще всё", type="primary"):
                 else:
                     telegram.send_message(f"⚠️ ИИ вернул ошибку: {ai_msg}", c_id)
         
-        repo.save_apps(db)
+        if not save_apps_or_show_error(db):
+            st.stop()
         if updates_count > 0:
             st.success(f"Готово. Изменений: {updates_count}")
         else:
@@ -298,8 +307,8 @@ def render_app_groups(app_groups, os_icon):
                                     f"🤖 Пакетный анализ ({pkg_id}):\n\n{clean_ai_for_telegram(ai_msg)}",
                                     chat_id,
                                 )
-                        repo.save_apps(db)
-                        st.rerun()
+                        if save_apps_or_show_error(db):
+                            st.rerun()
                 
                 with col2:
                     saved_audit = first_info.get('ai_audit', '')
@@ -320,8 +329,8 @@ def render_app_groups(app_groups, os_icon):
                                 ai_msg = gemini.analyze_current_aso(batched_current)
                                 if not gemini.is_error_response(ai_msg):
                                     db[keys[0]]['ai_audit'] = ai_msg
-                                    repo.save_apps(db)
-                                    st.rerun()
+                                    if save_apps_or_show_error(db):
+                                        st.rerun()
                                 else:
                                     st.error(f"Ошибка ИИ: {ai_msg}")
                             else:
@@ -343,13 +352,13 @@ def render_app_groups(app_groups, os_icon):
                         st.write(f"**Локаль:** `{info['geo']}`")
                         if st.button("Проверить", key=f"btn_sng_{k}"):
                             run_check_for_item(k, info, {}, single_mode=True)
-                            repo.save_apps(db)
-                            st.rerun()
+                            if save_apps_or_show_error(db):
+                                st.rerun()
                     with c3:
                         if st.button("🗑️", key=f"del_{k}"):
                             del db[k]
-                            repo.save_apps(db)
-                            st.rerun()
+                            if save_apps_or_show_error(db):
+                                st.rerun()
 
 with tab_android:
     render_app_groups(android_apps, "🤖")

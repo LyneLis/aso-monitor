@@ -7,6 +7,7 @@ from core.config import Settings
 
 DEFAULT_MESSAGE_LIMIT = 4000
 BOT_CHUNK_LIMIT = 3900
+TELEGRAM_REQUEST_TIMEOUT_SEC = 15
 
 
 def clean_ai_for_telegram(text: str) -> str:
@@ -25,9 +26,15 @@ def format_changes_report(pkg_id: str, texts_by_geo: Dict[str, Dict[str, str]]) 
 
 
 class TelegramClient:
-    def __init__(self, settings: Settings, message_limit: int = DEFAULT_MESSAGE_LIMIT):
+    def __init__(
+        self,
+        settings: Settings,
+        message_limit: int = DEFAULT_MESSAGE_LIMIT,
+        request_timeout: float = TELEGRAM_REQUEST_TIMEOUT_SEC,
+    ):
         self._token = settings.telegram_token
         self._limit = message_limit
+        self._request_timeout = request_timeout
 
     @property
     def token(self) -> Optional[str]:
@@ -38,6 +45,25 @@ class TelegramClient:
             return None
         return f"https://api.telegram.org/bot{self._token}/{method}"
 
+    def _post(self, method: str, **kwargs: Any) -> Optional[requests.Response]:
+        url = self._api_url(method)
+        if not url:
+            return None
+
+        try:
+            response = requests.post(url, timeout=self._request_timeout, **kwargs)
+        except requests.RequestException as e:
+            print(f"⚠️ Telegram {method}: ошибка запроса: {e}")
+            return None
+        except Exception as e:
+            print(f"⚠️ Telegram {method}: неожиданная ошибка: {e}")
+            return None
+
+        if response.status_code != 200:
+            body = response.text[:300] if response.text else ""
+            print(f"⚠️ Telegram {method}: HTTP {response.status_code} {body}")
+        return response
+
     def send_message(
         self,
         text: str,
@@ -45,20 +71,16 @@ class TelegramClient:
         use_markdown: bool = False,
         chunk_sleep: float = 0,
     ) -> None:
-        url = self._api_url("sendMessage")
-        if not url or not chat_id:
+        if not chat_id:
             return
         for i in range(0, len(text), self._limit):
             chunk = text[i : i + self._limit]
             data: Dict[str, Any] = {"chat_id": chat_id, "text": chunk}
             if use_markdown:
                 data["parse_mode"] = "Markdown"
-            try:
-                res = requests.post(url, data=data)
-                if use_markdown and res.status_code != 200:
-                    requests.post(url, data={"chat_id": chat_id, "text": chunk})
-            except Exception:
-                pass
+            res = self._post("sendMessage", data=data)
+            if use_markdown and (not res or res.status_code != 200):
+                self._post("sendMessage", data={"chat_id": chat_id, "text": chunk})
             if chunk_sleep > 0:
                 time.sleep(chunk_sleep)
 
@@ -69,14 +91,10 @@ class TelegramClient:
         caption: str,
         chat_id: str,
     ) -> None:
-        url = self._api_url("sendDocument")
-        if not url or not chat_id:
+        if not chat_id:
             return
         files = {"document": (filename, file_content.encode("utf-8"))}
-        try:
-            requests.post(url, data={"chat_id": chat_id, "caption": caption}, files=files)
-        except Exception:
-            pass
+        self._post("sendDocument", data={"chat_id": chat_id, "caption": caption}, files=files)
 
     def send_visual_diff(
         self,
@@ -89,8 +107,7 @@ class TelegramClient:
     ) -> None:
         if not old_url or not new_url or old_url.lower() == "nan" or new_url.lower() == "nan":
             return
-        url = self._api_url("sendMediaGroup")
-        if not url or not chat_id:
+        if not chat_id:
             return
         media = [
             {
@@ -106,10 +123,7 @@ class TelegramClient:
                 "caption": f"🟢 <b>СТАЛО</b> | {name}\n📦 {pkg_id} [{geo}]",
             },
         ]
-        try:
-            requests.post(url, json={"chat_id": chat_id, "media": media})
-        except Exception as e:
-            print(f"⚠️ Ошибка отправки медиа-группы: {e}")
+        self._post("sendMediaGroup", json={"chat_id": chat_id, "media": media})
 
     def send_screenshots(
         self,
@@ -121,8 +135,7 @@ class TelegramClient:
     ) -> None:
         if not screenshots:
             return
-        url = self._api_url("sendMediaGroup")
-        if not url or not chat_id:
+        if not chat_id:
             return
         geo_upper = geo.upper()
         media = [
@@ -134,10 +147,7 @@ class TelegramClient:
             }
             for idx, s in enumerate(screenshots[:max_count])
         ]
-        try:
-            requests.post(url, json={"chat_id": chat_id, "media": media})
-        except Exception as e:
-            print(f"⚠️ Ошибка отправки скриншотов: {e}")
+        self._post("sendMediaGroup", json={"chat_id": chat_id, "media": media})
 
     def send_ai_analysis(
         self,
@@ -150,14 +160,10 @@ class TelegramClient:
         clean_ai = clean_ai_for_telegram(ai_text)
         full_text = f"{prefix}{clean_ai}"
         limit = chunk_limit if chunk_limit is not None else self._limit
-        url = self._api_url("sendMessage")
-        if not url or not chat_id:
+        if not chat_id:
             return
         for chunk_start in range(0, len(full_text), limit):
             chunk = full_text[chunk_start : chunk_start + limit]
-            try:
-                requests.post(url, data={"chat_id": chat_id, "text": chunk})
-            except Exception:
-                pass
+            self._post("sendMessage", data={"chat_id": chat_id, "text": chunk})
             if chunk_sleep > 0:
                 time.sleep(chunk_sleep)

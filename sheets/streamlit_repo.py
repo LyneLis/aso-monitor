@@ -9,6 +9,7 @@ class StreamlitAppsRepository:
     def __init__(self, connection: Any, available: bool):
         self._conn = connection
         self.available = available
+        self.last_error: Optional[str] = None
 
     @classmethod
     def connect(cls) -> "StreamlitAppsRepository":
@@ -64,10 +65,13 @@ class StreamlitAppsRepository:
 
     def save_apps(self, data: Dict[str, Dict[str, Any]]) -> bool:
         if not self.available:
+            self.last_error = "Нет подключения к Google Sheets."
             return False
         try:
             rows = [tracked_info_to_apps_row(info) for info in data.values()]
             self._conn.update(worksheet="apps", data=pd.DataFrame(rows))
+            self.last_error = None
             return True
-        except Exception:
+        except Exception as e:
+            self.last_error = str(e)
             return False

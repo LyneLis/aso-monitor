@@ -1,3 +1,5 @@
+from importlib import import_module
+
 from core.compare import (
     AppSnapshot,
     ChangeResult,
@@ -13,12 +15,18 @@ from core.compare import (
     snapshot_from_row,
 )
 from core.config import DEFAULT_SPREADSHEET_URL, Settings
-from core.gemini import GeminiClient
 from core.locales import GP_LOCALES_RAW
 from core.prompts import ASO_PROMPT, CURRENT_ASO_PROMPT
 from core.subtitle import decode_apple_subtitle
-from core.telegram import TelegramClient, clean_ai_for_telegram, format_changes_report
 from core.time_utils import get_minsk_time
+
+_LAZY_IMPORTS = {
+    "GeminiClient": ("core.gemini", "GeminiClient"),
+    "TelegramClient": ("core.telegram", "TelegramClient"),
+    "clean_ai_for_telegram": ("core.telegram", "clean_ai_for_telegram"),
+    "fetch_app_data": ("core.parsing", "fetch_app_data"),
+    "format_changes_report": ("core.telegram", "format_changes_report"),
+}
 
 __all__ = [
     "AppSnapshot",
@@ -49,8 +57,9 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    if name == "fetch_app_data":
-        from core.parsing import fetch_app_data
-
-        return fetch_app_data
+    if name in _LAZY_IMPORTS:
+        module_name, attr_name = _LAZY_IMPORTS[name]
+        value = getattr(import_module(module_name), attr_name)
+        globals()[name] = value
+        return value
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

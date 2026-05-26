@@ -1,8 +1,6 @@
 import time
 from typing import Any, Dict, List, Optional
 
-import google.generativeai as genai
-
 from core.config import Settings
 from core.prompts import ASO_PROMPT, CURRENT_ASO_PROMPT
 
@@ -18,25 +16,57 @@ NO_API_KEY_MSG = "❌ Ключ Gemini API не найден."
 
 
 class GeminiClient:
-    def __init__(self, settings: Settings, verbose: bool = False):
+    def __init__(self, settings: Settings, verbose: bool = False, client: Optional[Any] = None):
         self._api_key = settings.gemini_api_key
         self._verbose = verbose
-        if self._api_key:
-            genai.configure(api_key=self._api_key, transport="rest")
+        self._client = client
+
+    def _get_client(self) -> Any:
+        if self._client is None:
+            try:
+                from google import genai
+            except ImportError as e:
+                raise RuntimeError("Пакет google-genai не установлен.") from e
+            self._client = genai.Client(api_key=self._api_key)
+        return self._client
+
+    def _available_models(self, client: Any) -> List[str]:
+        available_models: List[str] = []
+        try:
+            for model in client.models.list():
+                if not self._supports_generate_content(model):
+                    continue
+                available_models.append(self._model_name(model))
+        except Exception as e:
+            if self._verbose:
+                print(f"⚠️ Не удалось получить список моделей: {e}")
+        return available_models
+
+    @staticmethod
+    def _model_name(model: Any) -> str:
+        name = getattr(model, "name", str(model))
+        return str(name).replace("models/", "", 1)
+
+    @staticmethod
+    def _supports_generate_content(model: Any) -> bool:
+        supported = getattr(model, "supported_actions", None)
+        if supported is None:
+            supported = getattr(model, "supported_generation_methods", None)
+        if supported is None:
+            return True
+        normalized = {str(item).replace("_", "").lower() for item in supported}
+        return "generatecontent" in normalized
 
     def run(self, prompt: str) -> str:
         if not self._api_key:
             return NO_API_KEY_MSG
 
-        available_models: List[str] = []
         try:
-            for m in genai.list_models():
-                if "generateContent" in m.supported_generation_methods:
-                    available_models.append(m.name.replace("models/", ""))
+            client = self._get_client()
         except Exception as e:
-            if self._verbose:
-                print(f"⚠️ Не удалось получить список моделей: {e}")
+            return f"❌ Ошибка ИИ-анализа: {e}"
 
+        available_models = self._available_models(client)
         models_to_try = [m for m in PRIORITY_MODELS if m in available_models]
         if not models_to_try:
             models_to_try = available_models[:2] if available_models else PRIORITY_MODELS
@@ -46,19 +76,20 @@ class GeminiClient:
             try:
                 if self._verbose:
                     print(f"🤖 Пробую модель: {model_name}...")
-                model = genai.GenerativeModel(model_name)
-                response = model.generate_content(prompt)
-                if response and response.text:
-                    return response.text
+                response = client.models.generate_content(model=model_name, contents=prompt)
+                text = getattr(response, "text", None)
+                if text:
+                    return text
             except Exception as e:
                 error_str = str(e)
                 last_error = error_str
                 if "429" in error_str or "Quota" in error_str:
                     time.sleep(QUOTA_RETRY_SLEEP_SEC)
                     try:
-                        response = model.generate_content(prompt)
-                        if response and response.text:
-                            return response.text
+                        response = client.models.generate_content(model=model_name, contents=prompt)
+                        text = getattr(response, "text", None)
+                        if text:
+                            return text
                     except Exception as retry_e:
                         last_error = str(retry_e)
                 continue
