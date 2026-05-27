@@ -62,7 +62,7 @@ def test_check_item_snapshots_preserves_ios_summary_when_web_subtitle_unavailabl
 
 
 def test_check_item_snapshots_clears_invalid_ios_summary_when_web_subtitle_unavailable():
-    old = AppSnapshot(title="App", summary="card", description="Description")
+    old = AppSnapshot(title="App", summary="कार्ड", description="Description")
 
     def fetcher(package_id, geo):
         return {

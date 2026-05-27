@@ -1,9 +1,12 @@
 import codecs
 import re
+import unicodedata
 
 GENERIC_SUBTITLE_VALUES = frozenset({
     "card",
     "cards",
+    "कार्ड",
+    "कार्ड्स",
     "app",
     "apps",
     "game",
@@ -32,7 +35,8 @@ def decode_apple_subtitle(raw: str) -> str:
 
 
 def clean_subtitle_candidate(subtitle: str) -> str:
-    return re.sub(r"\s+", " ", str(subtitle or "").strip().strip('"'))
+    normalized = unicodedata.normalize("NFKC", str(subtitle or ""))
+    return re.sub(r"\s+", " ", normalized.strip().strip('"'))
 
 
 def is_valid_subtitle_candidate(subtitle: str) -> bool:

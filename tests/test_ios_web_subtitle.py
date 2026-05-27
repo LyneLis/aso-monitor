@@ -24,7 +24,7 @@ def test_parse_ios_page_html_reads_subtitle_from_web_html():
 
 def test_parse_ios_page_html_ignores_generic_card_subtitle_from_json():
     subtitle, screens = _parse_ios_page_html(
-        '<html><script>{"subtitle":"card"}</script></html>',
+        '<html><script>{"subtitle":"कार्ड"}</script></html>',
         ["lookup-screen"],
     )
 
@@ -86,7 +86,7 @@ def test_fetch_ios_app_data_uses_english_web_subtitle_when_locale_has_noise(monk
                 }
             )
         if "l=hi-IN" in url:
-            return FakeResponse(text='<html><script>{"subtitle":"card"}</script></html>')
+            return FakeResponse(text='<html><script>{"subtitle":"कार्ड"}</script></html>')
         return FakeResponse(text='<html><p class="subtitle">Relaxing jigsaw puzzles</p></html>')
 
     monkeypatch.setattr("core.parsing.requests.get", fake_get)

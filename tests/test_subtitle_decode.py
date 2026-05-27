@@ -1,4 +1,4 @@
-from core.subtitle import decode_apple_subtitle
+from core.subtitle import decode_apple_subtitle, is_valid_subtitle_candidate
 
 
 def test_unicode_escape_japanese():
@@ -15,3 +15,8 @@ def test_strips_surrounding_quotes():
 
 def test_empty():
     assert decode_apple_subtitle("") == ""
+
+
+def test_hindi_card_is_not_valid_subtitle_candidate():
+    assert is_valid_subtitle_candidate("कार्ड") is False
+    assert is_valid_subtitle_candidate(" कार्ड्स ") is False
