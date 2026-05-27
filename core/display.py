@@ -1,4 +1,4 @@
-from typing import Any, Dict, Iterable, Mapping
+from typing import Any, Callable, Dict, Iterable, Mapping, Optional
 
 ENGLISH_LOCALES = frozenset({"en", "en-us", "en_us", "us"})
 PUBLISHER_KEYS = ("publisher", "developer", "developerName", "artistName", "sellerName")
@@ -70,3 +70,36 @@ def app_label_from_group(
     fallback_id: Any = "",
 ) -> str:
     return app_label_from_records((data[key] for key in keys if key in data), fallback_id)
+
+
+def resolve_english_app_label(
+    package_id: Any,
+    records: Iterable[Mapping[str, Any]],
+    *,
+    fetcher: Optional[Callable[[str, str], Mapping[str, Any]]] = None,
+    english_locale: str = "en-US",
+) -> str:
+    record_list = list(records)
+    fallback = app_label_from_records(record_list, package_id)
+    if fetcher is None:
+        return fallback
+
+    try:
+        fetched = fetcher(str(package_id), english_locale)
+    except Exception as e:
+        print(f"⚠️ Не удалось получить английское название для {package_id}: {e}")
+        return fallback
+
+    english_title = clean_display_value(fetched.get("title"))
+    english_publisher = publisher_from_fetch(fetched)
+    if not english_title:
+        return fallback
+
+    fallback_publisher = ""
+    for record in record_list:
+        current = _record_current(record)
+        fallback_publisher = clean_display_value(current.get("publisher") or record.get("publisher"))
+        if fallback_publisher:
+            break
+
+    return format_app_label(english_title, english_publisher or fallback_publisher, package_id)

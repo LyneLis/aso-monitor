@@ -124,24 +124,10 @@ def test_auto_alert_uses_english_title_and_publisher(monkeypatch):
         def iter_rows(self):
             yield 2, {
                 "package_id": "com.test.app",
-                "geo": "en-US",
+                "geo": "ja-JP",
                 "chat_id": "123",
-                "title": "English Title",
-                "summary": "Summary",
-                "description": "Description",
-                "publisher": "",
-                "icon": "",
-                "header_image": "",
-                "screenshots": "[]",
-                "history": "[]",
-                "check_log": "[]",
-            }
-            yield 3, {
-                "package_id": "com.test.app",
-                "geo": "fr-FR",
-                "chat_id": "123",
-                "title": "Titre Francais",
-                "summary": "Résumé",
+                "title": "日本語タイトル",
+                "summary": "概要",
                 "description": "Description",
                 "publisher": "",
                 "icon": "",
@@ -179,7 +165,7 @@ def test_auto_alert_uses_english_title_and_publisher(monkeypatch):
 
     def fake_fetcher(package_id, geo):
         base = {
-            "summary": "Summary" if geo == "en-US" else "Résumé",
+            "summary": "Summary" if geo == "en-US" else "概要",
             "description": "Description",
             "developer": "Test Publisher",
             "icon": "",
@@ -187,7 +173,7 @@ def test_auto_alert_uses_english_title_and_publisher(monkeypatch):
         }
         if geo == "en-US":
             return {**base, "title": "English Title", "screenshots": []}
-        return {**base, "title": "Titre Francais", "screenshots": ["new-screen"]}
+        return {**base, "title": "日本語タイトル", "screenshots": ["new-screen"]}
 
     fake_telegram = FakeTelegram()
     monkeypatch.setattr(bot, "GspreadAppsRepository", FakeRepo)

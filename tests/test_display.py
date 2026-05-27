@@ -1,4 +1,10 @@
-from core.display import app_label_from_group, app_label_from_records, format_app_label, publisher_from_fetch
+from core.display import (
+    app_label_from_group,
+    app_label_from_records,
+    format_app_label,
+    publisher_from_fetch,
+    resolve_english_app_label,
+)
 
 
 def test_publisher_from_fetch_supports_google_play_and_app_store_keys():
@@ -28,3 +34,33 @@ def test_app_label_from_group_reads_current_state():
     }
 
     assert app_label_from_group(data, ["app_fr", "app_en"], "com.app") == "English Title (Studio)"
+
+
+def test_resolve_english_app_label_fetches_en_us_before_local_fallback():
+    records = [
+        {"geo": "ja-JP", "title": "Cardscapes: ジグソーパズル", "publisher": "Malpa Games"},
+    ]
+
+    def fetcher(package_id, geo):
+        assert package_id == "com.cards.app"
+        assert geo == "en-US"
+        return {"title": "Cardscapes: Jigsaw Puzzles", "developer": "Malpa Games"}
+
+    assert (
+        resolve_english_app_label("com.cards.app", records, fetcher=fetcher)
+        == "Cardscapes: Jigsaw Puzzles (Malpa Games)"
+    )
+
+
+def test_resolve_english_app_label_falls_back_when_fetch_fails():
+    records = [
+        {"geo": "ja-JP", "title": "Cardscapes: ジグソーパズル", "publisher": "Malpa Games"},
+    ]
+
+    def fetcher(package_id, geo):
+        raise RuntimeError("store unavailable")
+
+    assert (
+        resolve_english_app_label("com.cards.app", records, fetcher=fetcher)
+        == "Cardscapes: ジグソーパズル (Malpa Games)"
+    )

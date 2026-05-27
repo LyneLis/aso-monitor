@@ -15,7 +15,7 @@ from core import (
     get_minsk_time,
 )
 from core.audit_state import group_ai_audit, set_group_ai_audit
-from core.display import app_label_from_group, publisher_from_fetch
+from core.display import publisher_from_fetch, resolve_english_app_label
 from core.site_checks import run_site_check_for_item
 from sheets import StreamlitAppsRepository
 
@@ -375,6 +375,35 @@ def group_keys_for_info(info):
     ]
 
 
+def app_display_name_for_group(pkg_id, chat_id, keys=None, cache=None):
+    cache_key = (str(pkg_id), str(chat_id))
+    if cache is not None and cache_key in cache:
+        return cache[cache_key]
+    keys = keys or [
+        key
+        for key, candidate in db.items()
+        if candidate.get("package_id") == pkg_id
+        and str(candidate.get("chat_id", "")).strip() == str(chat_id).strip()
+    ]
+    label = resolve_english_app_label(
+        pkg_id,
+        (db[key] for key in keys if key in db),
+        fetcher=fetch_app_data,
+    )
+    if cache is not None:
+        cache[cache_key] = label
+    return label
+
+
+def app_display_name_for_info(info, cache=None):
+    return app_display_name_for_group(
+        info.get("package_id"),
+        info.get("chat_id", ""),
+        group_keys_for_info(info),
+        cache,
+    )
+
+
 def send_single_locale_alert(info, changed, outcome, *, app_display_name=None, skip_ai=False):
     if not outcome or not outcome.result.has_changes:
         return
@@ -384,7 +413,7 @@ def send_single_locale_alert(info, changed, outcome, *, app_display_name=None, s
     old_snap = outcome.old_snapshot
     c_id = info["chat_id"]
     os_icon = "🍎" if str(info["package_id"]).isdigit() else "🤖"
-    display_name = app_display_name or app_label_from_group(db, group_keys_for_info(info), info["package_id"])
+    display_name = app_display_name or app_display_name_for_info(info)
     msg_prefix = "🔄 ОТКАТ (A/B ТЕСТ)" if result.is_rollback else "⚠️ ИЗМЕНЕНИЕ"
     alert_msg = (
         f"{msg_prefix} {os_icon} [{info['geo'].upper()}]\n📦 {display_name}\n"
@@ -405,7 +434,7 @@ def send_single_locale_alert(info, changed, outcome, *, app_display_name=None, s
         telegram.send_document(
             report_content,
             f"report_{info['package_id']}.txt",
-            f"📄 Детальный отчет: {info['package_id']}",
+            f"📄 Детальный отчет: {display_name}",
             c_id,
         )
 
@@ -566,6 +595,7 @@ if st.button(
         updates_count = 0
         errors_count = 0
         batched_alerts = {}
+        display_name_cache = {}
         keys_to_check = list(db.keys())
         total_checks = len(keys_to_check)
         progress = st.progress(0, text="Подготовка проверки")
@@ -582,7 +612,7 @@ if st.button(
             progress.progress(idx / total_checks, text=f"Проверено локалей: {idx}/{total_checks}")
 
             if u > 0 and outcome:
-                app_display_name = app_label_from_group(db, group_keys_for_info(info), info["package_id"])
+                app_display_name = app_display_name_for_info(info, display_name_cache)
                 add_changed_locale_to_batch(
                     batched_alerts,
                     info['package_id'],
@@ -739,7 +769,7 @@ def render_app_groups(app_groups, os_icon):
                             if upd > 0 and batched_ai:
                                 st.info("Готовлю пакетный AI-разбор")
                                 ai_msg = gemini.analyze_batched_changes(batched_ai)
-                                app_display_name = app_label_from_group(db, keys, pkg_id)
+                                app_display_name = app_display_name_for_group(pkg_id, chat_id, keys)
                                 telegram.send_message(
                                     f"🤖 Пакетный анализ ({app_display_name}):\n\n{clean_ai_for_telegram(ai_msg)}",
                                     chat_id,
@@ -810,7 +840,7 @@ def render_app_groups(app_groups, os_icon):
                                         info,
                                         changed,
                                         outcome,
-                                        app_display_name=app_label_from_group(db, group_keys_for_info(info), info["package_id"]),
+                                        app_display_name=app_display_name_for_info(info),
                                     )
                                 if latest_log_status(info).startswith("❌"):
                                     set_flash("warning", f"{info['geo'].upper()}: проверка завершилась с ошибкой.")

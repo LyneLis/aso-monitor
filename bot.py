@@ -12,8 +12,9 @@ from core import (
     history_entry_from_snapshot,
     snapshot_from_row,
 )
+from core.parsing import fetch_app_data
 from core.telegram import BOT_CHUNK_LIMIT
-from core.display import app_label_from_records, publisher_from_fetch
+from core.display import publisher_from_fetch, resolve_english_app_label
 from sheets import GspreadAppsRepository
 from sheets.serialization import parse_json_list
 
@@ -68,12 +69,24 @@ def check_apps(fetcher=None):
     batched_alerts = {}
     rows = list(repo.iter_rows())
     group_records = {}
+    display_name_cache = {}
+    label_fetcher = fetcher or fetch_app_data
 
     for _, row in rows:
         p_id = str(row.get("package_id", "")).strip()
         c_id = str(row.get("chat_id", "")).strip()
         if p_id and p_id != "nan":
             group_records.setdefault((p_id, c_id), []).append(row)
+
+    def app_display_name_for(p_id, c_id):
+        cache_key = (p_id, c_id)
+        if cache_key not in display_name_cache:
+            display_name_cache[cache_key] = resolve_english_app_label(
+                p_id,
+                group_records.get(cache_key, []),
+                fetcher=label_fetcher,
+            )
+        return display_name_cache[cache_key]
 
     for row_index, row in rows:
         p_id = str(row.get("package_id", "")).strip()
@@ -131,7 +144,7 @@ def check_apps(fetcher=None):
 
                 if has_owner:
                     user_stats[c_id]["updated"] += 1
-                    app_display_name = app_label_from_records(group_records.get((p_id, c_id), [row]), p_id)
+                    app_display_name = app_display_name_for(p_id, c_id)
                     add_changed_locale_to_batch(
                         batched_alerts,
                         p_id,
