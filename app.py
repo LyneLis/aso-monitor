@@ -89,7 +89,10 @@ def latest_log_label(info):
     if not logs:
         return "Проверок еще не было"
     last = logs[-1]
-    return f"{last.get('time', '—')} · {last.get('status', '—')}"
+    status = last.get("status", "—")
+    if is_neutral_status(status):
+        return str(last.get("time", "—"))
+    return f"{last.get('time', '—')} · {status}"
 
 
 def latest_log_status(info):
@@ -128,6 +131,10 @@ def is_change_status(status):
     return "Изменение" in str(status or "")
 
 
+def is_neutral_status(status):
+    return str(status or "").startswith("🟢")
+
+
 def is_stale_info(info, now=None):
     checked_at = latest_log_time(info)
     if not checked_at:
@@ -162,7 +169,7 @@ def locale_status_label(info, now=None):
         return "🟠 Давно"
     if is_change_status(status):
         return "🔵 Изменение"
-    return "🟢 Ок"
+    return ""
 
 
 def group_status_summary(keys, now=None):
@@ -178,7 +185,11 @@ def group_status_summary(keys, now=None):
         return f"🟠 Проверить: {stale}"
     if changes:
         return f"🔵 Изменение: {changes}"
-    return "🟢 Ок"
+    return ""
+
+
+def append_status_label(label, status):
+    return f"{label} · {status}" if status else label
 
 
 def group_status_priority(keys, now=None):
@@ -726,14 +737,16 @@ def render_app_groups(app_groups, os_icon):
         main_icon = first_info['current'].get('icon')
         status_summary = group_status_summary(keys)
         attention_label = attention_locales_label(keys)
+        title_prefix = f"{status_summary} · " if status_summary else ""
 
-        with st.expander(f"{status_summary} · {os_icon} {main_title} · {pkg_id} · {owner_name} · {len(keys)} лок."):
+        with st.expander(f"{title_prefix}{os_icon} {main_title} · {pkg_id} · {owner_name} · {len(keys)} лок."):
             col_img, col_space, col_btn = st.columns([1, 2, 4])
             with col_img:
                 if main_icon and main_icon != 'nan': st.image(main_icon, width=80)
                 st.caption(f"{len(keys)} локалей")
             with col_space:
-                st.write(f"**{status_summary}**")
+                if status_summary:
+                    st.write(f"**{status_summary}**")
                 st.caption(latest_group_check_label(keys))
                 if attention_label:
                     st.caption(attention_label)
@@ -822,17 +835,21 @@ def render_app_groups(app_groups, os_icon):
                     st.markdown(saved_audit)
 
             tabs_loc = st.tabs([
-                f"{GP_LOCALES_RAW.get(db[k]['geo'], db[k]['geo'])} · {locale_status_label(db[k])}"
+                append_status_label(
+                    GP_LOCALES_RAW.get(db[k]['geo'], db[k]['geo']),
+                    locale_status_label(db[k]),
+                )
                 for k in keys
             ])
             for i, k in enumerate(keys):
                 with tabs_loc[i]:
                     info = db[k]
+                    locale_label = append_status_label(f"**Локаль:** `{info['geo']}`", locale_status_label(info))
                     c1, c2, c3 = st.columns([1.5, 4, 1])
                     with c1:
                         if info['current'].get('icon'): st.image(info['current']['icon'], width=70)
                     with c2:
-                        st.write(f"**Локаль:** `{info['geo']}` · {locale_status_label(info)}")
+                        st.write(locale_label)
                         st.caption(f"Последняя проверка: {latest_log_label(info)}")
                         title = info['current'].get('title')
                         summary = info['current'].get('summary')

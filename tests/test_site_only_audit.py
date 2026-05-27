@@ -50,3 +50,13 @@ def test_legacy_json_state_is_not_used():
 
     assert not (root / "apps_history.json").exists()
     assert all("apps_history" not in path.read_text() for path in code_paths)
+
+
+def test_site_ui_hides_neutral_ok_badges():
+    root = Path(__file__).resolve().parents[1]
+    app_source = (root / "app.py").read_text()
+
+    assert 'return "🟢 Ок"' not in app_source
+    assert "def is_neutral_status" in app_source
+    assert "if is_neutral_status(status):" in app_source
+    assert "append_status_label(" in app_source
