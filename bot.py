@@ -210,7 +210,13 @@ def check_apps(fetcher=None):
             if vis["type"] == "diff":
                 telegram.send_visual_diff(c_id, vis["old"], vis["new"], vis["name"], app_display_name, geo)
             elif vis["type"] == "screens":
-                telegram.send_screenshots(c_id, vis["screens"], app_display_name, geo)
+                telegram.send_screenshot_collages(
+                    c_id,
+                    vis.get("old", []),
+                    vis.get("new", []),
+                    app_display_name,
+                    geo,
+                )
 
         if data["texts"]:
             print(f"🧠 Запуск ИИ для {app_display_name}...")

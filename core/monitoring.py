@@ -124,10 +124,11 @@ def add_changed_locale_to_batch(
             "new": new_snapshot.header_image,
             "geo": geo,
         })
-    if "Скриншоты" in changed and new_snapshot.screenshots:
+    if "Скриншоты" in changed and (old_snapshot.screenshots or new_snapshot.screenshots):
         batch["visuals"].append({
             "type": "screens",
-            "screens": new_snapshot.screenshots,
+            "old": old_snapshot.screenshots,
+            "new": new_snapshot.screenshots,
             "geo": geo,
         })
 

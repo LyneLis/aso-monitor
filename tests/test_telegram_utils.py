@@ -1,7 +1,10 @@
+from io import BytesIO
+
 import requests
+from PIL import Image
 
 from core.config import Settings
-from core.telegram import clean_ai_for_telegram, format_changes_report
+from core.telegram import build_screenshot_collage_bytes, clean_ai_for_telegram, format_changes_report
 from core.telegram import TelegramClient
 
 
@@ -158,3 +161,65 @@ def test_send_screenshots_falls_back_to_individual_photos(monkeypatch):
     ) is True
     assert calls[0][0].endswith("/sendMediaGroup")
     assert [call[0].split("/")[-1] for call in calls[1:]] == ["sendPhoto", "sendPhoto"]
+
+
+def make_test_image_bytes(color):
+    output = BytesIO()
+    Image.new("RGB", (80, 160), color).save(output, format="JPEG")
+    return output.getvalue()
+
+
+def test_build_screenshot_collage_downloads_all_images(monkeypatch):
+    downloaded = []
+
+    class Response:
+        status_code = 200
+        content = make_test_image_bytes((120, 20, 20))
+
+    def fake_get(url, **kwargs):
+        downloaded.append(url)
+        return Response()
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    collage = build_screenshot_collage_bytes(["https://example.com/one.jpg", "https://example.com/two.jpg"])
+
+    assert downloaded == ["https://example.com/one.jpg", "https://example.com/two.jpg"]
+    assert collage.startswith(b"\xff\xd8")
+
+
+def test_send_screenshot_collages_sends_before_and_after_photos(monkeypatch):
+    calls = []
+
+    class GetResponse:
+        status_code = 200
+        content = make_test_image_bytes((20, 120, 20))
+
+    class PostResponse:
+        status_code = 200
+        text = ""
+
+    def fake_get(url, **kwargs):
+        return GetResponse()
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        return PostResponse()
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    client = TelegramClient(Settings(telegram_token="token"))
+
+    assert client.send_screenshot_collages(
+        "123",
+        ["https://example.com/old-1.jpg", "https://example.com/old-2.jpg"],
+        ["https://example.com/new-1.jpg", "https://example.com/new-2.jpg"],
+        "Test App",
+        "en-US",
+    ) is True
+    assert [call[0].split("/")[-1] for call in calls] == ["sendPhoto", "sendPhoto"]
+    assert "БЫЛО" in calls[0][1]["data"]["caption"]
+    assert "СТАЛО" in calls[1][1]["data"]["caption"]
+    assert calls[0][1]["files"]["photo"][0] == "screenshots_before.jpg"
+    assert calls[1][1]["files"]["photo"][0] == "screenshots_after.jpg"

@@ -160,6 +160,9 @@ def test_auto_alert_uses_english_title_and_publisher(monkeypatch):
         def send_screenshots(self, *args, **kwargs):
             return True
 
+        def send_screenshot_collages(self, *args, **kwargs):
+            return True
+
         def send_ai_analysis(self, *args, **kwargs):
             return True
 
@@ -235,6 +238,9 @@ def test_auto_alert_is_skipped_when_row_save_fails(monkeypatch):
             return True
 
         def send_screenshots(self, *args, **kwargs):
+            return True
+
+        def send_screenshot_collages(self, *args, **kwargs):
             return True
 
         def send_ai_analysis(self, *args, **kwargs):

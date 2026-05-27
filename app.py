@@ -666,8 +666,14 @@ if st.button(
                     if vis['type'] == 'diff':
                         telegram.send_visual_diff(c_id, vis['old'], vis['new'], vis['name'], app_display_name, geo)
                         time.sleep(1.5)
-                    elif vis['type'] == 'screens' and vis['screens']:
-                        telegram.send_screenshots(c_id, vis['screens'], app_display_name, geo)
+                    elif vis['type'] == 'screens' and (vis.get('old') or vis.get('new')):
+                        telegram.send_screenshot_collages(
+                            c_id,
+                            vis.get('old', []),
+                            vis.get('new', []),
+                            app_display_name,
+                            geo,
+                        )
                         time.sleep(2)
 
                 if data['texts']:

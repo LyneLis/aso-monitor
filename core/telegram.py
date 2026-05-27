@@ -1,7 +1,9 @@
 import time
+from io import BytesIO
 from typing import Any, Dict, List, Optional
 
 import requests
+from PIL import Image, ImageDraw, ImageOps
 
 from core.config import Settings
 
@@ -11,6 +13,12 @@ TELEGRAM_REQUEST_TIMEOUT_SEC = 15
 TELEGRAM_RETRY_COUNT = 2
 TELEGRAM_RETRY_SLEEP_SEC = 0.0
 RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+SCREENSHOT_COLLAGE_THUMB_SIZE = (320, 720)
+SCREENSHOT_COLLAGE_GAP = 16
+IMAGE_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
 
 
 def clean_ai_for_telegram(text: str) -> str:
@@ -26,6 +34,71 @@ def format_changes_report(pkg_id: str, texts_by_geo: Dict[str, Dict[str, str]]) 
             f"--- СТАЛО ---\nНазвание: {txt['new_t']}\nSD/Subtitle: {txt['new_s']}\nFD:\n{txt['new_d']}\n\n"
         )
     return report
+
+
+def _download_image(url: str, timeout: float = TELEGRAM_REQUEST_TIMEOUT_SEC) -> Optional[Image.Image]:
+    if not url or str(url).lower() == "nan":
+        return None
+    try:
+        response = requests.get(str(url), headers={"User-Agent": IMAGE_USER_AGENT}, timeout=timeout)
+        if response.status_code != 200:
+            print(f"⚠️ Screenshot download HTTP {response.status_code}: {url}")
+            return None
+        image = Image.open(BytesIO(response.content))
+        return ImageOps.exif_transpose(image).convert("RGB")
+    except Exception as e:
+        print(f"⚠️ Не удалось скачать скриншот для коллажа: {e}")
+        return None
+
+
+def _placeholder_collage_bytes() -> bytes:
+    image = Image.new("RGB", (900, 480), (245, 247, 250))
+    draw = ImageDraw.Draw(image)
+    draw.text((360, 225), "NO SCREENSHOTS", fill=(92, 101, 112))
+    output = BytesIO()
+    image.save(output, format="JPEG", quality=88, optimize=True)
+    return output.getvalue()
+
+
+def _collage_columns(count: int) -> int:
+    if count <= 1:
+        return 1
+    if count <= 4:
+        return 2
+    if count <= 9:
+        return 3
+    return 4
+
+
+def build_screenshot_collage_bytes(screenshot_urls: List[str]) -> bytes:
+    images = [
+        image
+        for image in (_download_image(url) for url in screenshot_urls)
+        if image is not None
+    ]
+    if not images:
+        return _placeholder_collage_bytes()
+
+    thumbs = [ImageOps.contain(image, SCREENSHOT_COLLAGE_THUMB_SIZE) for image in images]
+    columns = _collage_columns(len(thumbs))
+    rows = (len(thumbs) + columns - 1) // columns
+    cell_w = max(image.width for image in thumbs)
+    cell_h = max(image.height for image in thumbs)
+    gap = SCREENSHOT_COLLAGE_GAP
+    canvas_w = columns * cell_w + (columns + 1) * gap
+    canvas_h = rows * cell_h + (rows + 1) * gap
+    collage = Image.new("RGB", (canvas_w, canvas_h), (245, 247, 250))
+
+    for idx, image in enumerate(thumbs):
+        col = idx % columns
+        row = idx // columns
+        x = gap + col * (cell_w + gap) + (cell_w - image.width) // 2
+        y = gap + row * (cell_h + gap) + (cell_h - image.height) // 2
+        collage.paste(image, (x, y))
+
+    output = BytesIO()
+    collage.save(output, format="JPEG", quality=88, optimize=True)
+    return output.getvalue()
 
 
 class TelegramClient:
@@ -214,6 +287,38 @@ class TelegramClient:
             return False
         caption = f"📱 Скриншот {index}/{total} {pkg_id} [{geo_upper}]"
         res = self._post("sendPhoto", data={"chat_id": chat_id, "photo": screenshot, "caption": caption})
+        return bool(res and res.status_code == 200)
+
+    def send_screenshot_collages(
+        self,
+        chat_id: str,
+        old_screenshots: List[str],
+        new_screenshots: List[str],
+        pkg_id: str,
+        geo: str,
+    ) -> bool:
+        if not chat_id:
+            return False
+        old_collage = build_screenshot_collage_bytes(old_screenshots)
+        new_collage = build_screenshot_collage_bytes(new_screenshots)
+        geo_upper = geo.upper()
+        old_sent = self._send_collage_photo(
+            chat_id,
+            old_collage,
+            "screenshots_before.jpg",
+            f"🔴 БЫЛО | Скриншоты\n📦 {pkg_id} [{geo_upper}]",
+        )
+        new_sent = self._send_collage_photo(
+            chat_id,
+            new_collage,
+            "screenshots_after.jpg",
+            f"🟢 СТАЛО | Скриншоты\n📦 {pkg_id} [{geo_upper}]",
+        )
+        return old_sent and new_sent
+
+    def _send_collage_photo(self, chat_id: str, image_bytes: bytes, filename: str, caption: str) -> bool:
+        files = {"photo": (filename, image_bytes, "image/jpeg")}
+        res = self._post("sendPhoto", data={"chat_id": chat_id, "caption": caption}, files=files)
         return bool(res and res.status_code == 200)
 
     def send_ai_analysis(

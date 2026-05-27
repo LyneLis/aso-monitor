@@ -153,7 +153,7 @@ def test_add_changed_locale_to_batch_collects_texts_and_visuals():
             "new": "new-header",
             "geo": "us",
         },
-        {"type": "screens", "screens": ["new-screen"], "geo": "us"},
+        {"type": "screens", "old": ["old-screen"], "new": ["new-screen"], "geo": "us"},
     ]
 
 
