@@ -38,6 +38,20 @@ def test_fetch_ios_app_data_uses_web_locale_for_subtitle(monkeypatch):
     def fake_get(url, **kwargs):
         calls.append((url, kwargs))
         if "itunes.apple.com" in url:
+            if "lang=en_us" in url:
+                return FakeResponse(
+                    json_data={
+                        "resultCount": 1,
+                        "results": [
+                            {
+                                "trackName": "Test App",
+                                "description": "English Description",
+                                "artworkUrl100": "https://example.com/icon.webp",
+                                "screenshotUrls": ["https://example.com/screen.webp"],
+                            }
+                        ],
+                    }
+                )
             return FakeResponse(
                 json_data={
                     "resultCount": 1,
@@ -45,7 +59,7 @@ def test_fetch_ios_app_data_uses_web_locale_for_subtitle(monkeypatch):
                         {
                             "trackName": "Test App",
                             "artistName": "Test Publisher",
-                            "description": "Description",
+                            "description": "Description française",
                             "subtitle": "English subtitle from lookup",
                             "artworkUrl100": "https://example.com/icon.webp",
                             "screenshotUrls": ["https://example.com/screen.webp"],
@@ -62,11 +76,62 @@ def test_fetch_ios_app_data_uses_web_locale_for_subtitle(monkeypatch):
     assert result["summary"] == "Sous-titre français"
     assert result["publisher"] == "Test Publisher"
     assert result["summary"] != "English subtitle from lookup"
-    assert calls[1][0] == "https://apps.apple.com/ca/app/id123456789?l=fr-CA"
-    assert calls[1][1]["headers"]["Accept-Language"].startswith("fr-CA")
+    assert calls[1][0] == "https://itunes.apple.com/lookup?id=123456789&country=CA&lang=en_us"
+    assert calls[2][0] == "https://apps.apple.com/ca/app/id123456789?l=fr-CA"
+    assert calls[2][1]["headers"]["Accept-Language"].startswith("fr-CA")
 
 
 def test_fetch_ios_app_data_uses_english_web_subtitle_when_locale_has_noise(monkeypatch):
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append((url, kwargs))
+        if "itunes.apple.com" in url:
+            if "lang=en_us" in url:
+                return FakeResponse(
+                    json_data={
+                        "resultCount": 1,
+                        "results": [
+                            {
+                                "trackName": "Cardscapes",
+                                "description": "English description",
+                                "artworkUrl100": "https://example.com/icon.webp",
+                                "screenshotUrls": ["https://example.com/screen.webp"],
+                            }
+                        ],
+                    }
+                )
+            return FakeResponse(
+                json_data={
+                    "resultCount": 1,
+                    "results": [
+                        {
+                            "trackName": "Cardscapes Localized",
+                            "description": "Localized description",
+                            "artworkUrl100": "https://example.com/icon.webp",
+                            "screenshotUrls": ["https://example.com/screen.webp"],
+                        }
+                    ],
+                }
+            )
+        if "l=hi-IN" in url:
+            return FakeResponse(text='<html><script>{"subtitle":"कार्ड"}</script></html>')
+        return FakeResponse(text='<html><p class="subtitle">Relaxing jigsaw puzzles</p></html>')
+
+    monkeypatch.setattr("core.parsing.requests.get", fake_get)
+
+    result = _fetch_ios_app_data("123456789", "hi-IN", "hi-IN", "IN")
+
+    assert result["title"] == "Cardscapes Localized"
+    assert result["description"] == "Localized description"
+    assert result["summary"] == "Relaxing jigsaw puzzles"
+    assert result["summary_unavailable"] is False
+    assert calls[1][0] == "https://itunes.apple.com/lookup?id=123456789&country=IN&lang=en_us"
+    assert calls[2][0] == "https://apps.apple.com/in/app/id123456789?l=hi-IN"
+    assert calls[3][0] == "https://apps.apple.com/in/app/id123456789?l=en-US"
+
+
+def test_fetch_ios_app_data_uses_english_web_subtitle_when_lookup_is_unlocalized(monkeypatch):
     calls = []
 
     def fake_get(url, **kwargs):
@@ -86,8 +151,8 @@ def test_fetch_ios_app_data_uses_english_web_subtitle_when_locale_has_noise(monk
                 }
             )
         if "l=hi-IN" in url:
-            return FakeResponse(text='<html><script>{"subtitle":"कार्ड"}</script></html>')
-        return FakeResponse(text='<html><p class="subtitle">Relaxing jigsaw puzzles</p></html>')
+            return FakeResponse(text='<html><p class="subtitle">रंगीन जिग्सॉ पज़ल पूरा करें!</p></html>')
+        return FakeResponse(text='<html><p class="subtitle">Complete colorful jigsaw puzzles!</p></html>')
 
     monkeypatch.setattr("core.parsing.requests.get", fake_get)
 
@@ -95,9 +160,10 @@ def test_fetch_ios_app_data_uses_english_web_subtitle_when_locale_has_noise(monk
 
     assert result["title"] == "Cardscapes"
     assert result["description"] == "English description"
-    assert result["summary"] == "Relaxing jigsaw puzzles"
-    assert result["summary_unavailable"] is False
-    assert calls[1][0] == "https://apps.apple.com/in/app/id123456789?l=hi-IN"
+    assert result["summary"] == "Complete colorful jigsaw puzzles!"
+    assert result["summary"] != "रंगीन जिग्सॉ पज़ल पूरा करें!"
+    assert calls[0][0] == "https://itunes.apple.com/lookup?id=123456789&country=IN&lang=hi_in"
+    assert calls[1][0] == "https://itunes.apple.com/lookup?id=123456789&country=IN&lang=en_us"
     assert calls[2][0] == "https://apps.apple.com/in/app/id123456789?l=en-US"
 
 

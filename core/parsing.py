@@ -108,6 +108,33 @@ def _apple_web_lang(locale: str) -> str:
     return locale
 
 
+def _itunes_lookup(pkg_id: str, c_code: str, apple_lang: str, *, allow_country_fallback: bool = False) -> dict:
+    url = f"https://itunes.apple.com/lookup?id={pkg_id}&country={c_code}&lang={apple_lang}"
+    res = requests.get(url, timeout=10).json()
+
+    if res.get("resultCount", 0) == 0 and allow_country_fallback:
+        url_fallback = f"https://itunes.apple.com/lookup?id={pkg_id}&country={c_code}"
+        res = requests.get(url_fallback, timeout=10).json()
+
+    if res.get("resultCount", 0) == 0:
+        raise Exception(f"Приложение {pkg_id} не найдено в App Store ({c_code})")
+    return res["results"][0]
+
+
+def _lookup_text(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip()).lower()
+
+
+def _lookup_matches_english(local_data: dict, english_data: dict) -> bool:
+    if not english_data:
+        return False
+    local_title = _lookup_text(local_data.get("trackName", ""))
+    english_title = _lookup_text(english_data.get("trackName", ""))
+    local_description = _lookup_text(local_data.get("description", ""))
+    english_description = _lookup_text(english_data.get("description", ""))
+    return bool(local_title or local_description) and local_title == english_title and local_description == english_description
+
+
 def _fetch_ios_web_page(pkg_id: str, c_code: str, locale: str, l_code: str, screens: List[str]) -> Tuple[str, List[str]]:
     web_lang = _apple_web_lang(locale)
     app_url = f"https://apps.apple.com/{c_code.lower()}/app/id{pkg_id}?{urlencode({'l': web_lang})}"
@@ -124,30 +151,32 @@ def _fetch_ios_web_page(pkg_id: str, c_code: str, locale: str, l_code: str, scre
 
 def _fetch_ios_app_data(pkg_id: str, locale: str, l_code: str, c_code: str) -> dict:
     apple_lang = locale.replace("-", "_").lower()
-    url = f"https://itunes.apple.com/lookup?id={pkg_id}&country={c_code}&lang={apple_lang}"
-    res = requests.get(url, timeout=10).json()
-
-    if res.get("resultCount", 0) == 0:
-        url_fallback = f"https://itunes.apple.com/lookup?id={pkg_id}&country={c_code}"
-        res = requests.get(url_fallback, timeout=10).json()
-        if res.get("resultCount", 0) == 0:
-            raise Exception(f"Приложение {pkg_id} не найдено в App Store ({c_code})")
-
-    data = res["results"][0]
+    data = _itunes_lookup(pkg_id, c_code, apple_lang, allow_country_fallback=True)
     screens = data.get("screenshotUrls", []) or data.get("ipadScreenshotUrls", [])
     icon_url = data.get("artworkUrl512", data.get("artworkUrl100", "")).replace(".webp", ".jpg")
     subtitle = ""
     subtitle_unavailable = False
     screenshots_unavailable = False
+    web_locale = locale
+    web_l_code = l_code
+
+    if locale.lower() not in ("en", "en-us", "en_us"):
+        try:
+            english_data = _itunes_lookup(pkg_id, c_code, "en_us")
+            if _lookup_matches_english(data, english_data):
+                web_locale = "en-US"
+                web_l_code = "en-US"
+        except Exception as e:
+            print(f"⚠️ Ошибка проверки английской локализации App Store: {e}")
 
     try:
-        subtitle, screens = _fetch_ios_web_page(pkg_id, c_code, locale, l_code, screens)
+        subtitle, screens = _fetch_ios_web_page(pkg_id, c_code, web_locale, web_l_code, screens)
     except Exception as e:
         subtitle_unavailable = True
         screenshots_unavailable = True
         print(f"⚠️ Ошибка парсера App Store HTML: {e}")
     else:
-        if not subtitle and locale.lower() != "en-us":
+        if not subtitle and web_locale.lower() != "en-us":
             try:
                 fallback_subtitle, _ = _fetch_ios_web_page(pkg_id, c_code, "en-US", "en-US", screens)
                 subtitle = fallback_subtitle
