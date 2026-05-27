@@ -767,9 +767,17 @@ def render_app_groups(app_groups, os_icon):
                             status_box.empty()
                         if save_apps_or_show_error(db, updated_keys=keys):
                             if upd > 0 and batched_ai:
+                                app_display_name = app_display_name_for_group(pkg_id, chat_id, keys)
+                                full_report = format_changes_report(app_display_name, batched_ai)
+                                telegram.send_document(
+                                    full_report,
+                                    f"report_{pkg_id}.txt",
+                                    f"📄 Отчет: {app_display_name}",
+                                    chat_id,
+                                )
+                                time.sleep(1)
                                 st.info("Готовлю пакетный AI-разбор")
                                 ai_msg = gemini.analyze_batched_changes(batched_ai)
-                                app_display_name = app_display_name_for_group(pkg_id, chat_id, keys)
                                 telegram.send_message(
                                     f"🤖 Пакетный анализ ({app_display_name}):\n\n{clean_ai_for_telegram(ai_msg)}",
                                     chat_id,

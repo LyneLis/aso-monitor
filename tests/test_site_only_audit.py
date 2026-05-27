@@ -35,6 +35,7 @@ def test_site_checks_save_before_telegram_notifications():
 
     assert mass_check_block.index("save_apps_or_show_error") < mass_check_block.index("telegram.send_message")
     assert group_check_block.index("save_apps_or_show_error") < group_check_block.index("telegram.send_message")
+    assert group_check_block.index("telegram.send_document") < group_check_block.index("gemini.analyze_batched_changes")
     assert single_locale_block.index("save_apps_or_show_error") < single_locale_block.index("send_single_locale_alert")
 
 

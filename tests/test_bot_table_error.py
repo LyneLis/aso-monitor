@@ -184,3 +184,82 @@ def test_auto_alert_uses_english_title_and_publisher(monkeypatch):
     bot.check_apps(fetcher=fake_fetcher)
 
     assert any("📦 English Title (Test Publisher)" in message for message in fake_telegram.messages)
+
+
+def test_auto_alert_is_skipped_when_row_save_fails(monkeypatch):
+    class FakeRepo:
+        def __init__(self, settings):
+            self.settings = settings
+
+        def open(self):
+            return None
+
+        def iter_rows(self):
+            yield 2, {
+                "package_id": "com.test.app",
+                "geo": "hi-IN",
+                "chat_id": "123",
+                "title": "पुराना नाम",
+                "summary": "Old summary",
+                "description": "Old description",
+                "publisher": "",
+                "icon": "",
+                "header_image": "",
+                "screenshots": "[]",
+                "history": "[]",
+                "check_log": "[]",
+            }
+
+        def update_row(self, row_index, row):
+            raise RuntimeError("sheet write failed")
+
+        @staticmethod
+        def parse_row_lists(row):
+            return [], [], []
+
+    class FakeTelegram:
+        def __init__(self):
+            self.messages = []
+            self.documents = []
+            self.ai_messages = []
+
+        def send_message(self, text, chat_id, **kwargs):
+            self.messages.append(text)
+            return True
+
+        def send_document(self, *args, **kwargs):
+            self.documents.append(args)
+            return True
+
+        def send_visual_diff(self, *args, **kwargs):
+            return True
+
+        def send_screenshots(self, *args, **kwargs):
+            return True
+
+        def send_ai_analysis(self, *args, **kwargs):
+            self.ai_messages.append(args)
+            return True
+
+    def fake_fetcher(package_id, geo):
+        return {
+            "title": "English Title",
+            "summary": "Old summary",
+            "description": "Old description",
+            "developer": "Test Publisher",
+            "icon": "",
+            "headerImage": "",
+            "screenshots": [],
+        }
+
+    fake_telegram = FakeTelegram()
+    monkeypatch.setattr(bot, "GspreadAppsRepository", FakeRepo)
+    monkeypatch.setattr(bot, "telegram", fake_telegram)
+    monkeypatch.setattr(bot, "get_minsk_time", lambda: "01.01.2026 12:00:00")
+    monkeypatch.setattr(bot.time, "sleep", lambda _: None)
+
+    bot.check_apps(fetcher=fake_fetcher)
+
+    assert fake_telegram.messages == []
+    assert fake_telegram.documents == []
+    assert fake_telegram.ai_messages == []

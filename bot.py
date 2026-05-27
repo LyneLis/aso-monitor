@@ -130,6 +130,7 @@ def check_apps(fetcher=None):
             result = outcome.result
             write_metadata_to_row(row, outcome.metadata)
 
+            pending_alert = None
             if result.has_changes:
                 changes = result.changed
                 print(f"    ⚠️ Изменение в {p_id} ({full_geo})")
@@ -143,10 +144,7 @@ def check_apps(fetcher=None):
                 row["history"] = json.dumps(history[-5:], ensure_ascii=False)
 
                 if has_owner:
-                    user_stats[c_id]["updated"] += 1
-                    app_display_name = app_display_name_for(p_id, c_id)
-                    add_changed_locale_to_batch(
-                        batched_alerts,
+                    pending_alert = (
                         p_id,
                         c_id,
                         full_geo,
@@ -154,8 +152,7 @@ def check_apps(fetcher=None):
                         new_snap,
                         changes,
                         result.text_payload,
-                        is_rollback=result.is_rollback,
-                        app_display_name=app_display_name,
+                        result.is_rollback,
                     )
             elif result.is_table_error:
                 current_log.append({"time": get_minsk_time(), "status": "🟢 Авто: Исправление ошибки"})
@@ -165,6 +162,31 @@ def check_apps(fetcher=None):
 
             row["check_log"] = json.dumps(current_log[-5:], ensure_ascii=False)
             repo.update_row(row_index, row)
+            if pending_alert:
+                (
+                    alert_p_id,
+                    alert_c_id,
+                    alert_geo,
+                    alert_old,
+                    alert_new,
+                    alert_changes,
+                    text_payload,
+                    is_rollback,
+                ) = pending_alert
+                user_stats[alert_c_id]["updated"] += 1
+                app_display_name = app_display_name_for(alert_p_id, alert_c_id)
+                add_changed_locale_to_batch(
+                    batched_alerts,
+                    alert_p_id,
+                    alert_c_id,
+                    alert_geo,
+                    alert_old,
+                    alert_new,
+                    alert_changes,
+                    text_payload,
+                    is_rollback=is_rollback,
+                    app_display_name=app_display_name,
+                )
             time.sleep(0.6)
         except Exception as e:
             print(f"    ❌ Ошибка {p_id}: {e}")
