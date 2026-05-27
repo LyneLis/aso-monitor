@@ -317,7 +317,7 @@ class TelegramClient:
         return old_sent and new_sent
 
     def _send_collage_photo(self, chat_id: str, image_bytes: bytes, filename: str, caption: str) -> bool:
-        files = {"photo": (filename, image_bytes, "image/jpeg")}
+        files = {"photo": (filename, BytesIO(image_bytes), "image/jpeg")}
         res = self._post("sendPhoto", data={"chat_id": chat_id, "caption": caption}, files=files)
         return bool(res and res.status_code == 200)
 

@@ -223,3 +223,39 @@ def test_send_screenshot_collages_sends_before_and_after_photos(monkeypatch):
     assert "СТАЛО" in calls[1][1]["data"]["caption"]
     assert calls[0][1]["files"]["photo"][0] == "screenshots_before.jpg"
     assert calls[1][1]["files"]["photo"][0] == "screenshots_after.jpg"
+
+
+def test_send_screenshot_collages_attempts_after_when_before_fails(monkeypatch):
+    calls = []
+
+    class GetResponse:
+        status_code = 200
+        content = make_test_image_bytes((20, 120, 20))
+
+    class PostResponse:
+        def __init__(self, status_code):
+            self.status_code = status_code
+            self.text = ""
+
+    def fake_get(url, **kwargs):
+        return GetResponse()
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        return PostResponse(500 if len(calls) == 1 else 200)
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    client = TelegramClient(Settings(telegram_token="token"), retry_count=0)
+
+    assert client.send_screenshot_collages(
+        "123",
+        ["https://example.com/old.jpg"],
+        ["https://example.com/new.jpg"],
+        "Test App",
+        "en-US",
+    ) is False
+    assert [call[0].split("/")[-1] for call in calls] == ["sendPhoto", "sendPhoto"]
+    assert "БЫЛО" in calls[0][1]["data"]["caption"]
+    assert "СТАЛО" in calls[1][1]["data"]["caption"]

@@ -60,3 +60,21 @@ def test_site_ui_hides_neutral_ok_badges():
     assert "def is_neutral_status" in app_source
     assert "if is_neutral_status(status):" in app_source
     assert "append_status_label(" in app_source
+
+
+def test_site_manual_checks_send_visual_alerts():
+    root = Path(__file__).resolve().parents[1]
+    app_source = (root / "app.py").read_text()
+    group_check_block = app_source[
+        app_source.index("if st.button(\n                        f\"Проверить локали"):
+        app_source.index("with col2:")
+    ]
+    single_locale_alert_block = app_source[
+        app_source.index("def send_single_locale_alert"):
+        app_source.index("# --- ИНТЕРФЕЙС ---")
+    ]
+
+    assert "def send_visual_change_alerts" in app_source
+    assert "send_visual_change_alerts(c_id, changed" in single_locale_alert_block
+    assert "visual_alerts.append" in group_check_block
+    assert "send_visual_change_alerts(" in group_check_block

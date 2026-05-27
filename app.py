@@ -415,6 +415,44 @@ def app_display_name_for_info(info, cache=None):
     )
 
 
+def send_visual_change_alerts(chat_id, changed, old_snapshot, new_snapshot, app_display_name, geo):
+    geo_upper = geo.upper()
+    if "Иконка" in changed:
+        telegram.send_visual_diff(
+            chat_id,
+            old_snapshot.icon,
+            new_snapshot.icon,
+            "Иконка",
+            app_display_name,
+            geo_upper,
+        )
+        time.sleep(1.5)
+    if "Feature Graphic" in changed:
+        telegram.send_visual_diff(
+            chat_id,
+            old_snapshot.header_image,
+            new_snapshot.header_image,
+            "Feature Graphic",
+            app_display_name,
+            geo_upper,
+        )
+        time.sleep(1.5)
+    if "Скриншоты" in changed and (old_snapshot.screenshots or new_snapshot.screenshots):
+        sent = telegram.send_screenshot_collages(
+            chat_id,
+            old_snapshot.screenshots,
+            new_snapshot.screenshots,
+            app_display_name,
+            geo_upper,
+        )
+        if not sent:
+            telegram.send_message(
+                f"⚠️ Не удалось отправить коллаж скриншотов: {app_display_name} [{geo_upper}]",
+                chat_id,
+            )
+        time.sleep(2)
+
+
 def send_single_locale_alert(info, changed, outcome, *, app_display_name=None, skip_ai=False):
     if not outcome or not outcome.result.has_changes:
         return
@@ -433,6 +471,8 @@ def send_single_locale_alert(info, changed, outcome, *, app_display_name=None, s
     if result.is_rollback:
         alert_msg += "\n\n⚠️ Тексты вернулись к одной из прошлых версий."
     telegram.send_message(alert_msg, c_id)
+
+    send_visual_change_alerts(c_id, changed, old_snap, new_snap, display_name, info["geo"])
 
     if result.text_payload:
         report_content = format_single_locale_report(
@@ -662,18 +702,29 @@ if st.button(
                     time.sleep(1)
 
                 for vis in data['visuals']:
-                    geo = vis['geo'].upper()
                     if vis['type'] == 'diff':
-                        telegram.send_visual_diff(c_id, vis['old'], vis['new'], vis['name'], app_display_name, geo)
+                        telegram.send_visual_diff(
+                            c_id,
+                            vis['old'],
+                            vis['new'],
+                            vis['name'],
+                            app_display_name,
+                            vis['geo'].upper(),
+                        )
                         time.sleep(1.5)
                     elif vis['type'] == 'screens' and (vis.get('old') or vis.get('new')):
-                        telegram.send_screenshot_collages(
+                        sent = telegram.send_screenshot_collages(
                             c_id,
                             vis.get('old', []),
                             vis.get('new', []),
                             app_display_name,
-                            geo,
+                            vis['geo'].upper(),
                         )
+                        if not sent:
+                            telegram.send_message(
+                                f"⚠️ Не удалось отправить коллаж скриншотов: {app_display_name} [{vis['geo'].upper()}]",
+                                c_id,
+                            )
                         time.sleep(2)
 
                 if data['texts']:
@@ -769,24 +820,42 @@ def render_app_groups(app_groups, os_icon):
                             upd = 0
                             errors = 0
                             batched_ai = {}
+                            visual_alerts = []
                             progress = st.progress(0, text="Подготовка проверки")
                             status_box = st.empty()
                             for idx, k in enumerate(keys, start=1):
                                 locale_info = db[k]
                                 title = locale_info.get("current", {}).get("title") or locale_info["package_id"]
                                 status_box.info(f"Проверка {idx}/{len(keys)}: {title} · {locale_info['geo'].upper()}")
-                                u, _, txt_payload, _ = run_site_check_for_item(db[k], item_key=k)
+                                u, changed_list, txt_payload, outcome = run_site_check_for_item(db[k], item_key=k)
                                 upd += u
                                 if latest_log_status(db[k]).startswith("❌"):
                                     errors += 1
                                 if txt_payload:
                                     batched_ai[db[k]['geo']] = txt_payload
+                                if u > 0 and outcome:
+                                    visual_alerts.append((
+                                        db[k]['geo'],
+                                        changed_list,
+                                        outcome.old_snapshot,
+                                        outcome.new_snapshot,
+                                    ))
                                 progress.progress(idx / len(keys), text=f"Проверено локалей: {idx}/{len(keys)}")
                             progress.empty()
                             status_box.empty()
                         if save_apps_or_show_error(db, updated_keys=keys):
-                            if upd > 0 and batched_ai:
+                            if upd > 0:
                                 app_display_name = app_display_name_for_group(pkg_id, chat_id, keys)
+                                for geo, changed_list, old_snap, new_snap in visual_alerts:
+                                    send_visual_change_alerts(
+                                        chat_id,
+                                        changed_list,
+                                        old_snap,
+                                        new_snap,
+                                        app_display_name,
+                                        geo,
+                                    )
+                            if upd > 0 and batched_ai:
                                 full_report = format_changes_report(app_display_name, batched_ai)
                                 telegram.send_document(
                                     full_report,
