@@ -16,6 +16,18 @@ SUBTITLE_JSON_RE = re.compile(r'"subtitle"\s*:\s*"((?:[^"\\]|\\.)*)"')
 SUBTITLE_CLASS_RE = re.compile(r"^subtitle")
 SCREENSHOT_SIZE_RE = re.compile(r"/(\d+)x(\d+)")
 SKIP_IMAGE_KEYWORDS = ("icon", "logo", "artwork", "brand")
+GENERIC_SUBTITLE_VALUES = frozenset({
+    "card",
+    "cards",
+    "app",
+    "apps",
+    "game",
+    "games",
+    "preview",
+    "previews",
+    "screenshot",
+    "screenshots",
+})
 
 
 def _locale_codes(locale: str) -> Tuple[str, str]:
@@ -78,21 +90,40 @@ def _collect_screenshots_from_soup(soup: BeautifulSoup) -> List[str]:
     return clean_screens
 
 
+def _is_valid_subtitle_candidate(subtitle: str) -> bool:
+    clean = str(subtitle or "").strip().strip('"')
+    if not clean:
+        return False
+    normalized = re.sub(r"\s+", " ", clean).strip().lower()
+    if normalized in GENERIC_SUBTITLE_VALUES:
+        return False
+    if normalized.startswith(("http://", "https://")):
+        return False
+    if any(ch in normalized for ch in "{}[]<>"):
+        return False
+    return True
+
+
+def _clean_subtitle_candidate(subtitle: str) -> str:
+    return re.sub(r"\s+", " ", str(subtitle or "").strip().strip('"'))
+
+
 def _parse_ios_page_html(html_content: str, screens: List[str]) -> Tuple[str, List[str]]:
     soup = BeautifulSoup(html_content, "html.parser")
 
     subtitle = ""
-    p_tag = soup.find("p", class_=SUBTITLE_CLASS_RE)
-    if p_tag:
-        subtitle = p_tag.get_text(strip=True)
+    for tag in soup.find_all(["p", "h2", "div"], class_=SUBTITLE_CLASS_RE):
+        candidate = _clean_subtitle_candidate(tag.get_text(" ", strip=True))
+        if _is_valid_subtitle_candidate(candidate):
+            subtitle = candidate
+            break
 
     if not subtitle:
-        sub_match = SUBTITLE_JSON_RE.search(html_content)
-        if sub_match:
-            subtitle = decode_apple_subtitle(sub_match.group(1))
-
-    if subtitle:
-        subtitle = subtitle.strip('"')
+        for sub_match in SUBTITLE_JSON_RE.finditer(html_content):
+            candidate = _clean_subtitle_candidate(decode_apple_subtitle(sub_match.group(1)))
+            if _is_valid_subtitle_candidate(candidate):
+                subtitle = candidate
+                break
 
     clean_screens = _collect_screenshots_from_soup(soup)
     if clean_screens:
@@ -105,6 +136,20 @@ def _apple_web_lang(locale: str) -> str:
     if locale.lower().startswith("iw"):
         return locale.replace("iw", "he", 1)
     return locale
+
+
+def _fetch_ios_web_page(pkg_id: str, c_code: str, locale: str, l_code: str, screens: List[str]) -> Tuple[str, List[str]]:
+    web_lang = _apple_web_lang(locale)
+    app_url = f"https://apps.apple.com/{c_code.lower()}/app/id{pkg_id}?{urlencode({'l': web_lang})}"
+    headers = {
+        "User-Agent": APPLE_USER_AGENT,
+        "Accept-Language": f"{web_lang},{l_code};q=0.9,en-US;q=0.6",
+    }
+    response = requests.get(app_url, headers=headers, timeout=15)
+    if response.status_code != 200:
+        raise RuntimeError(f"HTTP {response.status_code}")
+    response.encoding = "utf-8"
+    return _parse_ios_page_html(response.text, screens)
 
 
 def _fetch_ios_app_data(pkg_id: str, locale: str, l_code: str, c_code: str) -> dict:
@@ -126,24 +171,20 @@ def _fetch_ios_app_data(pkg_id: str, locale: str, l_code: str, c_code: str) -> d
     screenshots_unavailable = False
 
     try:
-        web_lang = _apple_web_lang(locale)
-        app_url = f"https://apps.apple.com/{c_code.lower()}/app/id{pkg_id}?{urlencode({'l': web_lang})}"
-        headers = {
-            "User-Agent": APPLE_USER_AGENT,
-            "Accept-Language": f"{web_lang},{l_code};q=0.9,en-US;q=0.6",
-        }
-        response = requests.get(app_url, headers=headers, timeout=15)
-        if response.status_code == 200:
-            response.encoding = "utf-8"
-            subtitle, screens = _parse_ios_page_html(response.text, screens)
-        else:
-            subtitle_unavailable = True
-            screenshots_unavailable = True
-            print(f"⚠️ App Store HTML вернул HTTP {response.status_code} для {pkg_id} ({locale})")
+        subtitle, screens = _fetch_ios_web_page(pkg_id, c_code, locale, l_code, screens)
     except Exception as e:
         subtitle_unavailable = True
         screenshots_unavailable = True
         print(f"⚠️ Ошибка парсера App Store HTML: {e}")
+    else:
+        if not subtitle and locale.lower() != "en-us":
+            try:
+                fallback_subtitle, _ = _fetch_ios_web_page(pkg_id, c_code, "en-US", "en-US", screens)
+                subtitle = fallback_subtitle
+            except Exception as e:
+                print(f"⚠️ Ошибка fallback App Store HTML en-US: {e}")
+        if not subtitle:
+            subtitle_unavailable = True
 
     return {
         "title": data.get("trackName", ""),

@@ -22,6 +22,16 @@ def test_parse_ios_page_html_reads_subtitle_from_web_html():
     assert screens == ["lookup-screen"]
 
 
+def test_parse_ios_page_html_ignores_generic_card_subtitle_from_json():
+    subtitle, screens = _parse_ios_page_html(
+        '<html><script>{"subtitle":"card"}</script></html>',
+        ["lookup-screen"],
+    )
+
+    assert subtitle == ""
+    assert screens == ["lookup-screen"]
+
+
 def test_fetch_ios_app_data_uses_web_locale_for_subtitle(monkeypatch):
     calls = []
 
@@ -56,6 +66,41 @@ def test_fetch_ios_app_data_uses_web_locale_for_subtitle(monkeypatch):
     assert calls[1][1]["headers"]["Accept-Language"].startswith("fr-CA")
 
 
+def test_fetch_ios_app_data_uses_english_web_subtitle_when_locale_has_noise(monkeypatch):
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append((url, kwargs))
+        if "itunes.apple.com" in url:
+            return FakeResponse(
+                json_data={
+                    "resultCount": 1,
+                    "results": [
+                        {
+                            "trackName": "Cardscapes",
+                            "description": "English description",
+                            "artworkUrl100": "https://example.com/icon.webp",
+                            "screenshotUrls": ["https://example.com/screen.webp"],
+                        }
+                    ],
+                }
+            )
+        if "l=hi-IN" in url:
+            return FakeResponse(text='<html><script>{"subtitle":"card"}</script></html>')
+        return FakeResponse(text='<html><p class="subtitle">Relaxing jigsaw puzzles</p></html>')
+
+    monkeypatch.setattr("core.parsing.requests.get", fake_get)
+
+    result = _fetch_ios_app_data("123456789", "hi-IN", "hi-IN", "IN")
+
+    assert result["title"] == "Cardscapes"
+    assert result["description"] == "English description"
+    assert result["summary"] == "Relaxing jigsaw puzzles"
+    assert result["summary_unavailable"] is False
+    assert calls[1][0] == "https://apps.apple.com/in/app/id123456789?l=hi-IN"
+    assert calls[2][0] == "https://apps.apple.com/in/app/id123456789?l=en-US"
+
+
 def test_fetch_ios_app_data_does_not_fallback_to_lookup_subtitle(monkeypatch):
     def fake_get(url, **kwargs):
         if "itunes.apple.com" in url:
@@ -78,6 +123,7 @@ def test_fetch_ios_app_data_does_not_fallback_to_lookup_subtitle(monkeypatch):
     result = _fetch_ios_app_data("123456789", "fr-CA", "fr-CA", "CA")
 
     assert result["summary"] == ""
+    assert result["summary_unavailable"] is True
 
 
 def test_fetch_ios_app_data_marks_subtitle_unavailable_on_web_error(monkeypatch):
