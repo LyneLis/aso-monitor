@@ -6,7 +6,7 @@ import requests
 from bs4 import BeautifulSoup
 from google_play_scraper import app as gp_app
 
-from core.subtitle import decode_apple_subtitle
+from core.subtitle import clean_subtitle_candidate, decode_apple_subtitle, is_valid_subtitle_candidate
 
 APPLE_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -16,18 +16,6 @@ SUBTITLE_JSON_RE = re.compile(r'"subtitle"\s*:\s*"((?:[^"\\]|\\.)*)"')
 SUBTITLE_CLASS_RE = re.compile(r"^subtitle")
 SCREENSHOT_SIZE_RE = re.compile(r"/(\d+)x(\d+)")
 SKIP_IMAGE_KEYWORDS = ("icon", "logo", "artwork", "brand")
-GENERIC_SUBTITLE_VALUES = frozenset({
-    "card",
-    "cards",
-    "app",
-    "apps",
-    "game",
-    "games",
-    "preview",
-    "previews",
-    "screenshot",
-    "screenshots",
-})
 
 
 def _locale_codes(locale: str) -> Tuple[str, str]:
@@ -90,38 +78,20 @@ def _collect_screenshots_from_soup(soup: BeautifulSoup) -> List[str]:
     return clean_screens
 
 
-def _is_valid_subtitle_candidate(subtitle: str) -> bool:
-    clean = str(subtitle or "").strip().strip('"')
-    if not clean:
-        return False
-    normalized = re.sub(r"\s+", " ", clean).strip().lower()
-    if normalized in GENERIC_SUBTITLE_VALUES:
-        return False
-    if normalized.startswith(("http://", "https://")):
-        return False
-    if any(ch in normalized for ch in "{}[]<>"):
-        return False
-    return True
-
-
-def _clean_subtitle_candidate(subtitle: str) -> str:
-    return re.sub(r"\s+", " ", str(subtitle or "").strip().strip('"'))
-
-
 def _parse_ios_page_html(html_content: str, screens: List[str]) -> Tuple[str, List[str]]:
     soup = BeautifulSoup(html_content, "html.parser")
 
     subtitle = ""
     for tag in soup.find_all(["p", "h2", "div"], class_=SUBTITLE_CLASS_RE):
-        candidate = _clean_subtitle_candidate(tag.get_text(" ", strip=True))
-        if _is_valid_subtitle_candidate(candidate):
+        candidate = clean_subtitle_candidate(tag.get_text(" ", strip=True))
+        if is_valid_subtitle_candidate(candidate):
             subtitle = candidate
             break
 
     if not subtitle:
         for sub_match in SUBTITLE_JSON_RE.finditer(html_content):
-            candidate = _clean_subtitle_candidate(decode_apple_subtitle(sub_match.group(1)))
-            if _is_valid_subtitle_candidate(candidate):
+            candidate = clean_subtitle_candidate(decode_apple_subtitle(sub_match.group(1)))
+            if is_valid_subtitle_candidate(candidate):
                 subtitle = candidate
                 break
 

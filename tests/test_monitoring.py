@@ -61,6 +61,34 @@ def test_check_item_snapshots_preserves_ios_summary_when_web_subtitle_unavailabl
     assert outcome.changed == []
 
 
+def test_check_item_snapshots_clears_invalid_ios_summary_when_web_subtitle_unavailable():
+    old = AppSnapshot(title="App", summary="card", description="Description")
+
+    def fetcher(package_id, geo):
+        return {
+            "title": "App",
+            "summary": "",
+            "summary_unavailable": True,
+            "description": "Description",
+            "icon": "",
+            "headerImage": "",
+            "screenshots": [],
+        }
+
+    outcome = check_item_snapshots(
+        "123456789",
+        "hi-IN",
+        old,
+        [],
+        False,
+        label_style="bot",
+        fetcher=fetcher,
+    )
+
+    assert outcome.new_snapshot.summary == ""
+    assert outcome.changed == ["Subtitle"]
+
+
 def test_check_item_snapshots_preserves_ios_screenshots_when_web_assets_unavailable():
     old = AppSnapshot(
         title="App",

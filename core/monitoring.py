@@ -7,6 +7,7 @@ from core.compare import (
     detect_changes_with_table_error,
     snapshot_from_fetch,
 )
+from core.subtitle import is_valid_subtitle_candidate
 
 
 @dataclass
@@ -52,7 +53,8 @@ def check_item_snapshots(
     fetched = fetcher(package_id, geo)
     new_snapshot = snapshot_from_fetch(fetched)
     if is_ios_package and fetched.get("summary_unavailable"):
-        new_snapshot.summary = old_snapshot.summary
+        if is_valid_subtitle_candidate(old_snapshot.summary):
+            new_snapshot.summary = old_snapshot.summary
     if is_ios_package and fetched.get("screenshots_unavailable"):
         new_snapshot.screenshots = old_snapshot.screenshots
 
