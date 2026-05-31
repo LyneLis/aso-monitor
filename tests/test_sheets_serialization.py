@@ -17,6 +17,17 @@ def test_tracked_info_from_row():
     assert storage_key(info) == "com.app_en-US_123"
 
 
+def test_tracked_info_from_row_normalizes_package_id():
+    info = tracked_info_from_row(
+        "com.playrix.gardenscapes&pcampaignid=promo&hl=ru",
+        "en-US",
+        "123",
+    )
+
+    assert info["package_id"] == "com.playrix.gardenscapes"
+    assert storage_key(info) == "com.playrix.gardenscapes_en-US_123"
+
+
 def test_tracked_info_skips_invalid():
     assert tracked_info_from_row("", "en-US") is None
     assert tracked_info_from_row("com.app", "nan") is None

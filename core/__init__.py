@@ -14,6 +14,7 @@ from core.compare import (
     snapshot_from_fetch,
     snapshot_from_row,
 )
+from core.app_ids import normalize_app_id
 from core.config import DEFAULT_SPREADSHEET_URL, Settings
 from core.locales import GP_LOCALES_RAW
 from core.monitoring import ItemCheckOutcome, add_changed_locale_to_batch, check_item_snapshots
@@ -57,6 +58,7 @@ __all__ = [
     "fetch_app_data",
     "format_changes_report",
     "get_minsk_time",
+    "normalize_app_id",
 ]
 
 

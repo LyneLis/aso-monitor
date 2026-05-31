@@ -1,4 +1,5 @@
 from core.parsing import _fetch_ios_app_data, _parse_ios_page_html
+from core.parsing import fetch_app_data
 
 
 class FakeResponse:
@@ -241,3 +242,18 @@ def test_fetch_ios_app_data_marks_screenshots_unavailable_on_web_429(monkeypatch
 
     assert result["screenshots"] == ["https://example.com/lookup-screen.jpg"]
     assert result["screenshots_unavailable"] is True
+
+
+def test_fetch_app_data_normalizes_google_play_package_id(monkeypatch):
+    calls = []
+
+    def fake_gp_app(package_id, **kwargs):
+        calls.append((package_id, kwargs))
+        return {"title": "Gardenscapes"}
+
+    monkeypatch.setattr("core.parsing.gp_app", fake_gp_app)
+
+    result = fetch_app_data("com.playrix.gardenscapes&pcampaignid=promo&hl=ru", "en-US")
+
+    assert result == {"title": "Gardenscapes"}
+    assert calls == [("com.playrix.gardenscapes", {"lang": "en-US", "country": "US"})]

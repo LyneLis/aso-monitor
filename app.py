@@ -13,6 +13,7 @@ from core import (
     format_changes_report,
     format_single_locale_report,
     get_minsk_time,
+    normalize_app_id,
 )
 from core.audit_state import group_ai_audit, set_group_ai_audit
 from core.display import publisher_from_fetch, resolve_english_app_label
@@ -538,13 +539,17 @@ with st.sidebar:
     locale_names = list(GP_LOCALES_RAW.values())
     default_preview_name = GP_LOCALES_RAW[DEFAULT_PREVIEW_LOCALE]
     with st.form("add_app_preview_form"):
-        new_id = st.text_input("Package ID / App ID", placeholder="com.app.name ИЛИ 835599320").strip()
+        raw_new_id = st.text_input(
+            "Package ID / App ID",
+            placeholder="com.app.name, 835599320 или ссылка из стора",
+        ).strip()
         preview_locale_name = st.selectbox(
             "Локаль для поиска",
             options=locale_names,
             index=locale_names.index(default_preview_name),
         )
         find_app_submitted = st.form_submit_button("Найти приложение", use_container_width=True)
+    new_id = normalize_app_id(raw_new_id)
     preview_geo = locale_key_by_name(preview_locale_name)
 
     if find_app_submitted:

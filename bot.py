@@ -12,9 +12,10 @@ from core import (
     history_entry_from_snapshot,
     snapshot_from_row,
 )
+from core.app_ids import normalize_app_id
+from core.display import publisher_from_fetch, resolve_english_app_label
 from core.parsing import fetch_app_data
 from core.telegram import BOT_CHUNK_LIMIT
-from core.display import publisher_from_fetch, resolve_english_app_label
 from sheets import GspreadAppsRepository
 from sheets.serialization import parse_json_list
 
@@ -73,7 +74,9 @@ def check_apps(fetcher=None):
     label_fetcher = fetcher or fetch_app_data
 
     for _, row in rows:
-        p_id = str(row.get("package_id", "")).strip()
+        p_id = normalize_app_id(row.get("package_id", ""))
+        if p_id:
+            row["package_id"] = p_id
         c_id = str(row.get("chat_id", "")).strip()
         if p_id and p_id != "nan":
             group_records.setdefault((p_id, c_id), []).append(row)
@@ -89,9 +92,10 @@ def check_apps(fetcher=None):
         return display_name_cache[cache_key]
 
     for row_index, row in rows:
-        p_id = str(row.get("package_id", "")).strip()
+        p_id = normalize_app_id(row.get("package_id", ""))
         if not p_id or p_id == "nan":
             continue
+        row["package_id"] = p_id
 
         c_id = str(row.get("chat_id", "")).strip()
         has_owner = bool(c_id and c_id.lower() != "nan")

@@ -6,6 +6,7 @@ import requests
 from bs4 import BeautifulSoup
 from google_play_scraper import app as gp_app
 
+from core.app_ids import normalize_app_id
 from core.subtitle import clean_subtitle_candidate, decode_apple_subtitle, is_valid_subtitle_candidate
 
 APPLE_USER_AGENT = (
@@ -199,10 +200,14 @@ def _fetch_ios_app_data(pkg_id: str, locale: str, l_code: str, c_code: str) -> d
 
 
 def fetch_app_data(pkg_id, locale: str) -> dict:
+    clean_pkg_id = normalize_app_id(pkg_id)
+    if not clean_pkg_id:
+        raise ValueError("Package ID / App ID пустой или некорректный")
+
     l_code, c_code = _locale_codes(locale)
     if l_code == "iw":
         l_code = "iw"
 
-    if str(pkg_id).isdigit():
-        return _fetch_ios_app_data(str(pkg_id), locale, l_code, c_code)
-    return gp_app(pkg_id, lang=l_code, country=c_code)
+    if clean_pkg_id.isdigit():
+        return _fetch_ios_app_data(clean_pkg_id, locale, l_code, c_code)
+    return gp_app(clean_pkg_id, lang=l_code, country=c_code)

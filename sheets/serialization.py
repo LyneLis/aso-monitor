@@ -1,6 +1,8 @@
 import json
 from typing import Any, Dict, List, Optional
 
+from core.app_ids import normalize_app_id
+
 
 def parse_json_list(value: Any, default: Optional[List] = None) -> List:
     default = default if default is not None else []
@@ -49,7 +51,9 @@ def tracked_info_from_row(
     if use_pandas_na:
         if _is_na(package_id) or _is_na(geo):
             return None
-        p_id, geo_str = _cell_str(package_id), _cell_str(geo)
+        p_id, geo_str = normalize_app_id(package_id), _cell_str(geo)
+        if not p_id or p_id.lower() == "nan":
+            return None
         c_id = "" if _is_na(chat_id) else _cell_str(chat_id)
         current = {
             "title": "" if _is_na(title) else _cell_str(title),
@@ -64,7 +68,7 @@ def tracked_info_from_row(
         hist = parse_json_list(history) if not _is_na(history) else []
         audit = "" if _is_na(ai_audit) else _cell_str(ai_audit)
     else:
-        p_id, geo_str = _cell_str(package_id), _cell_str(geo)
+        p_id, geo_str = normalize_app_id(package_id), _cell_str(geo)
         if not p_id or p_id.lower() == "nan" or not geo_str or geo_str.lower() == "nan":
             return None
         c_id = _cell_str(chat_id)
