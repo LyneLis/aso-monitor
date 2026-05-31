@@ -4,7 +4,8 @@ import requests
 from PIL import Image
 
 from core.config import Settings
-from core.telegram import build_screenshot_collage_bytes, clean_ai_for_telegram, format_changes_report
+from core.telegram import SCREENSHOT_COLLAGE_MAX_COUNT, build_screenshot_collage_bytes
+from core.telegram import clean_ai_for_telegram, format_changes_report
 from core.telegram import TelegramClient
 
 
@@ -188,6 +189,27 @@ def test_build_screenshot_collage_downloads_all_images(monkeypatch):
     assert collage.startswith(b"\xff\xd8")
 
 
+def test_build_screenshot_collage_limits_downloaded_images(monkeypatch):
+    downloaded = []
+
+    class Response:
+        status_code = 200
+        content = make_test_image_bytes((120, 20, 20))
+
+    def fake_get(url, **kwargs):
+        downloaded.append(url)
+        return Response()
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    urls = [f"https://example.com/{idx}.jpg" for idx in range(SCREENSHOT_COLLAGE_MAX_COUNT + 5)]
+
+    collage = build_screenshot_collage_bytes(urls)
+
+    assert downloaded == urls[:SCREENSHOT_COLLAGE_MAX_COUNT]
+    assert collage.startswith(b"\xff\xd8")
+
+
 def test_send_screenshot_collages_sends_before_and_after_photos(monkeypatch):
     calls = []
 
@@ -225,7 +247,7 @@ def test_send_screenshot_collages_sends_before_and_after_photos(monkeypatch):
     assert calls[1][1]["files"]["photo"][0] == "screenshots_after.jpg"
 
 
-def test_send_screenshot_collages_attempts_after_when_before_fails(monkeypatch):
+def test_send_screenshot_collages_falls_back_to_urls_when_uploads_fail(monkeypatch):
     calls = []
 
     class GetResponse:
@@ -242,7 +264,7 @@ def test_send_screenshot_collages_attempts_after_when_before_fails(monkeypatch):
 
     def fake_post(url, **kwargs):
         calls.append((url, kwargs))
-        return PostResponse(500 if len(calls) == 1 else 200)
+        return PostResponse(500 if "files" in kwargs else 200)
 
     monkeypatch.setattr(requests, "get", fake_get)
     monkeypatch.setattr(requests, "post", fake_post)
@@ -255,7 +277,14 @@ def test_send_screenshot_collages_attempts_after_when_before_fails(monkeypatch):
         ["https://example.com/new.jpg"],
         "Test App",
         "en-US",
-    ) is False
-    assert [call[0].split("/")[-1] for call in calls] == ["sendPhoto", "sendPhoto"]
+    ) is True
+    assert [call[0].split("/")[-1] for call in calls] == [
+        "sendPhoto",
+        "sendPhoto",
+        "sendPhoto",
+        "sendPhoto",
+    ]
     assert "БЫЛО" in calls[0][1]["data"]["caption"]
     assert "СТАЛО" in calls[1][1]["data"]["caption"]
+    assert calls[2][1]["data"]["photo"] == "https://example.com/old.jpg"
+    assert calls[3][1]["data"]["photo"] == "https://example.com/new.jpg"

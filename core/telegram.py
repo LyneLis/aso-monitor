@@ -15,6 +15,7 @@ TELEGRAM_RETRY_SLEEP_SEC = 0.0
 RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 SCREENSHOT_COLLAGE_THUMB_SIZE = (320, 720)
 SCREENSHOT_COLLAGE_GAP = 16
+SCREENSHOT_COLLAGE_MAX_COUNT = 12
 IMAGE_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -71,9 +72,10 @@ def _collage_columns(count: int) -> int:
 
 
 def build_screenshot_collage_bytes(screenshot_urls: List[str]) -> bytes:
+    limited_urls = list(screenshot_urls or [])[:SCREENSHOT_COLLAGE_MAX_COUNT]
     images = [
         image
-        for image in (_download_image(url) for url in screenshot_urls)
+        for image in (_download_image(url) for url in limited_urls)
         if image is not None
     ]
     if not images:
@@ -314,6 +316,22 @@ class TelegramClient:
             "screenshots_after.jpg",
             f"🟢 СТАЛО | Скриншоты\n📦 {pkg_id} [{geo_upper}]",
         )
+        if not old_sent and old_screenshots:
+            old_sent = self.send_screenshots(
+                chat_id,
+                old_screenshots,
+                f"{pkg_id} | БЫЛО",
+                geo_upper,
+                max_count=SCREENSHOT_COLLAGE_MAX_COUNT,
+            )
+        if not new_sent and new_screenshots:
+            new_sent = self.send_screenshots(
+                chat_id,
+                new_screenshots,
+                f"{pkg_id} | СТАЛО",
+                geo_upper,
+                max_count=SCREENSHOT_COLLAGE_MAX_COUNT,
+            )
         return old_sent and new_sent
 
     def _send_collage_photo(self, chat_id: str, image_bytes: bytes, filename: str, caption: str) -> bool:

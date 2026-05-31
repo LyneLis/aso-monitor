@@ -146,7 +146,7 @@ def is_stale_info(info, now=None):
 
 def is_problem_info(info):
     status = latest_log_status(info)
-    return is_error_status(status) or is_stale_info(info)
+    return is_error_status(status) or is_change_status(status) or is_stale_info(info)
 
 
 def status_priority_for_info(info, now=None):
@@ -667,6 +667,11 @@ if st.button(
                 errors_count += 1
             progress.progress(idx / total_checks, text=f"Проверено локалей: {idx}/{total_checks}")
 
+            if not save_apps_or_show_error(db, updated_keys={key}):
+                progress.empty()
+                status_box.empty()
+                st.stop()
+
             if u > 0 and outcome:
                 app_display_name = app_display_name_for_info(info, display_name_cache)
                 add_changed_locale_to_batch(
@@ -684,9 +689,6 @@ if st.button(
 
         progress.empty()
         status_box.empty()
-
-        if not save_apps_or_show_error(db, updated_keys=db.keys()):
-            st.stop()
 
         total_alerts = len(batched_alerts)
         if total_alerts:

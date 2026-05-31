@@ -34,6 +34,8 @@ def test_site_checks_save_before_telegram_notifications():
     ]
 
     assert mass_check_block.index("save_apps_or_show_error") < mass_check_block.index("telegram.send_message")
+    assert "updated_keys={key}" in mass_check_block
+    assert "updated_keys=db.keys()" not in mass_check_block
     assert group_check_block.index("save_apps_or_show_error") < group_check_block.index("telegram.send_message")
     assert group_check_block.index("telegram.send_document") < group_check_block.index("gemini.analyze_batched_changes")
     assert single_locale_block.index("save_apps_or_show_error") < single_locale_block.index("send_single_locale_alert")
@@ -60,6 +62,17 @@ def test_site_ui_hides_neutral_ok_badges():
     assert "def is_neutral_status" in app_source
     assert "if is_neutral_status(status):" in app_source
     assert "append_status_label(" in app_source
+
+
+def test_problem_filter_includes_changes():
+    root = Path(__file__).resolve().parents[1]
+    app_source = (root / "app.py").read_text()
+    problem_block = app_source[
+        app_source.index("def is_problem_info"):
+        app_source.index("def status_priority_for_info")
+    ]
+
+    assert "is_change_status(status)" in problem_block
 
 
 def test_site_manual_checks_send_visual_alerts():
