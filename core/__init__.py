@@ -20,7 +20,7 @@ from core.locales import GP_LOCALES_RAW
 from core.monitoring import ItemCheckOutcome, add_changed_locale_to_batch, check_item_snapshots
 from core.prompts import ASO_PROMPT, CURRENT_ASO_PROMPT
 from core.subtitle import decode_apple_subtitle
-from core.time_utils import get_minsk_time
+from core.time_utils import current_minsk_datetime, get_minsk_time
 
 _LAZY_IMPORTS = {
     "GeminiClient": ("core.gemini", "GeminiClient"),
@@ -46,6 +46,7 @@ __all__ = [
     "clean_ai_for_telegram",
     "clean_val",
     "current_dict_from_snapshot",
+    "current_minsk_datetime",
     "detect_changes",
     "detect_changes_with_table_error",
     "fill_missing_assets",

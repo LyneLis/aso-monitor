@@ -1,6 +1,6 @@
 import streamlit as st
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 from core import (
     GP_LOCALES_RAW,
@@ -9,6 +9,7 @@ from core import (
     TelegramClient,
     add_changed_locale_to_batch,
     clean_ai_for_telegram,
+    current_minsk_datetime,
     fetch_app_data,
     format_changes_report,
     format_single_locale_report,
@@ -118,10 +119,6 @@ def log_time(log):
         return datetime.strptime(log.get("time", ""), "%d.%m.%Y %H:%M:%S")
     except (TypeError, ValueError):
         return datetime.min
-
-
-def current_minsk_datetime():
-    return (datetime.now(UTC) + timedelta(hours=3)).replace(tzinfo=None)
 
 
 def is_error_status(status):
