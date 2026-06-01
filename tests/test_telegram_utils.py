@@ -288,3 +288,39 @@ def test_send_screenshot_collages_falls_back_to_urls_when_uploads_fail(monkeypat
     assert "СТАЛО" in calls[1][1]["data"]["caption"]
     assert calls[2][1]["data"]["photo"] == "https://example.com/old.jpg"
     assert calls[3][1]["data"]["photo"] == "https://example.com/new.jpg"
+
+
+def test_send_screenshot_collages_falls_back_to_urls_when_downloads_fail(monkeypatch):
+    calls = []
+
+    class GetResponse:
+        status_code = 403
+        content = b""
+
+    class PostResponse:
+        status_code = 200
+        text = ""
+
+    def fake_get(url, **kwargs):
+        return GetResponse()
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        return PostResponse()
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    client = TelegramClient(Settings(telegram_token="token"))
+
+    assert client.send_screenshot_collages(
+        "123",
+        ["https://example.com/old.jpg"],
+        ["https://example.com/new.jpg"],
+        "Test App",
+        "en-US",
+    ) is True
+    assert [call[0].split("/")[-1] for call in calls] == ["sendPhoto", "sendPhoto"]
+    assert all("files" not in kwargs for _, kwargs in calls)
+    assert calls[0][1]["data"]["photo"] == "https://example.com/old.jpg"
+    assert calls[1][1]["data"]["photo"] == "https://example.com/new.jpg"

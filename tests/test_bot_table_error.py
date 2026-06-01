@@ -269,3 +269,85 @@ def test_auto_alert_is_skipped_when_row_save_fails(monkeypatch):
     assert fake_telegram.messages == []
     assert fake_telegram.documents == []
     assert fake_telegram.ai_messages == []
+
+
+def test_auto_alert_records_telegram_delivery_failure(monkeypatch):
+    class FakeRepo:
+        updated_rows = []
+
+        def __init__(self, settings):
+            self.settings = settings
+
+        def open(self):
+            return None
+
+        def iter_rows(self):
+            yield 2, {
+                "package_id": "com.test.app",
+                "geo": "en-US",
+                "chat_id": "123",
+                "title": "Old title",
+                "summary": "Old summary",
+                "description": "Old description",
+                "publisher": "",
+                "icon": "",
+                "header_image": "",
+                "screenshots": "[]",
+                "history": "[]",
+                "check_log": "[]",
+            }
+
+        def update_row(self, row_index, row):
+            self.updated_rows.append((row_index, row.copy()))
+
+        @staticmethod
+        def parse_row_lists(row):
+            return [], [], []
+
+    class FakeTelegram:
+        def send_message(self, *args, **kwargs):
+            return True
+
+        def send_document(self, *args, **kwargs):
+            return False
+
+        def send_visual_diff(self, *args, **kwargs):
+            return True
+
+        def send_screenshot_collages(self, *args, **kwargs):
+            return True
+
+        def send_ai_analysis(self, *args, **kwargs):
+            return True
+
+    class FakeGemini:
+        def analyze_batched_changes(self, *args, **kwargs):
+            return "AI ok"
+
+        def is_error_response(self, text):
+            return False
+
+    def fake_fetcher(package_id, geo):
+        return {
+            "title": "New title",
+            "summary": "New summary",
+            "description": "New description",
+            "developer": "Test Publisher",
+            "icon": "",
+            "headerImage": "",
+            "screenshots": [],
+        }
+
+    monkeypatch.setattr(bot, "GspreadAppsRepository", FakeRepo)
+    monkeypatch.setattr(bot, "telegram", FakeTelegram())
+    monkeypatch.setattr(bot, "gemini", FakeGemini())
+    monkeypatch.setattr(bot, "get_minsk_time", lambda: "01.01.2026 12:00:00")
+    monkeypatch.setattr(bot.time, "sleep", lambda _: None)
+
+    bot.check_apps(fetcher=fake_fetcher)
+
+    assert len(FakeRepo.updated_rows) == 2
+    _, saved_row = FakeRepo.updated_rows[-1]
+    log = json.loads(saved_row["check_log"])
+    assert log[-1]["status"] == "❌ Авто: Telegram"
+    assert "файл отчета" in log[-1]["error"]

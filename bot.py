@@ -57,6 +57,16 @@ def save_row_error(repo, row_index, row, error):
         print(f"    ❌ Не удалось записать ошибку в таблицу: {save_error}")
 
 
+def save_telegram_delivery_error(repo, rows, message):
+    error_text = str(message)[:300]
+    for row_index, row in rows:
+        append_check_log(row, "❌ Авто: Telegram", error=error_text)
+        try:
+            repo.update_row(row_index, row)
+        except Exception as save_error:
+            print(f"    ❌ Не удалось записать ошибку Telegram в таблицу: {save_error}")
+
+
 def check_apps(fetcher=None):
     print(f"--- СТАРТ ПРОВЕРКИ v3.23 (Интервал 12ч) ({get_minsk_time()}) ---")
     repo = GspreadAppsRepository(settings)
@@ -191,6 +201,8 @@ def check_apps(fetcher=None):
                     is_rollback=is_rollback,
                     app_display_name=app_display_name,
                 )
+                batch_key = (alert_p_id, alert_c_id, str(alert_p_id).isdigit())
+                batched_alerts[batch_key].setdefault("rows", []).append((row_index, row))
             time.sleep(0.6)
         except Exception as e:
             print(f"    ❌ Ошибка {p_id}: {e}")
@@ -203,16 +215,20 @@ def check_apps(fetcher=None):
         summary_msg = f"{msg_prefix} {os_icon}\n📦 {app_display_name}\n\n"
         for geo, changes_list in data["changes"].items():
             summary_msg += f"🌍 [{geo.upper()}]: {', '.join(changes_list)}\n"
-        telegram.send_message(summary_msg, c_id)
+        telegram_failures = []
+        if not telegram.send_message(summary_msg, c_id):
+            telegram_failures.append("основной алерт")
 
         if data["texts"]:
             full_report = format_changes_report(app_display_name, data["texts"])
-            telegram.send_document(full_report, f"report_{pkg_id}.txt", f"📄 Отчет: {app_display_name}", c_id)
+            if not telegram.send_document(full_report, f"report_{pkg_id}.txt", f"📄 Отчет: {app_display_name}", c_id):
+                telegram_failures.append("файл отчета")
 
         for vis in data["visuals"]:
             geo = vis["geo"].upper()
             if vis["type"] == "diff":
-                telegram.send_visual_diff(c_id, vis["old"], vis["new"], vis["name"], app_display_name, geo)
+                if not telegram.send_visual_diff(c_id, vis["old"], vis["new"], vis["name"], app_display_name, geo):
+                    telegram_failures.append(f"{vis['name']} [{geo}]")
             elif vis["type"] == "screens":
                 sent = telegram.send_screenshot_collages(
                     c_id,
@@ -222,10 +238,13 @@ def check_apps(fetcher=None):
                     geo,
                 )
                 if not sent:
-                    telegram.send_message(
+                    warning_sent = telegram.send_message(
                         f"⚠️ Не удалось отправить коллаж скриншотов: {app_display_name} [{geo}]",
                         c_id,
                     )
+                    if not warning_sent:
+                        telegram_failures.append(f"ошибка скриншотов [{geo}]")
+                    telegram_failures.append(f"скриншоты [{geo}]")
 
         if data["texts"]:
             print(f"🧠 Запуск ИИ для {app_display_name}...")
@@ -233,14 +252,23 @@ def check_apps(fetcher=None):
                 ai_msg = gemini.analyze_batched_changes(data["texts"])
                 if not gemini.is_error_response(ai_msg):
                     print("✅ Анализ получен, отправляю в TG (с разбивкой)...")
-                    telegram.send_ai_analysis(c_id, ai_msg)
+                    if not telegram.send_ai_analysis(c_id, ai_msg):
+                        telegram_failures.append("AI-разбор")
                 else:
                     print(f"⚠️ ИИ вернул ошибку или пустой ответ: {ai_msg}")
             except Exception as ai_err:
                 print(f"❌ Критическая ошибка при работе с ИИ: {ai_err}")
+                telegram_failures.append("AI-разбор")
 
             print("⏳ Ожидание 45 секунд для сброса лимитов ИИ...")
             time.sleep(45)
+
+        if telegram_failures:
+            save_telegram_delivery_error(
+                repo,
+                data.get("rows", []),
+                "Не удалось отправить: " + ", ".join(telegram_failures),
+            )
 
 
 if __name__ == "__main__":

@@ -37,6 +37,8 @@ def test_site_checks_save_before_telegram_notifications():
     assert "updated_keys={key}" in mass_check_block
     assert "updated_keys=db.keys()" not in mass_check_block
     assert group_check_block.index("save_apps_or_show_error") < group_check_block.index("telegram.send_message")
+    assert "updated_keys={k}" in group_check_block
+    assert "updated_keys=keys" not in group_check_block
     assert group_check_block.index("telegram.send_document") < group_check_block.index("gemini.analyze_batched_changes")
     assert single_locale_block.index("save_apps_or_show_error") < single_locale_block.index("send_single_locale_alert")
 
@@ -91,3 +93,27 @@ def test_site_manual_checks_send_visual_alerts():
     assert "send_visual_change_alerts(c_id, changed" in single_locale_alert_block
     assert "visual_alerts.append" in group_check_block
     assert "send_visual_change_alerts(" in group_check_block
+
+
+def test_site_telegram_delivery_failures_are_recorded():
+    root = Path(__file__).resolve().parents[1]
+    app_source = (root / "app.py").read_text()
+    mass_check_block = app_source[
+        app_source.index("if st.button(\n    \"🔍 Проверить все локали\""):
+        app_source.index("# --- ФИЛЬТРАЦИЯ И ГРУППИРОВКА ---")
+    ]
+    group_check_block = app_source[
+        app_source.index("if st.button(\n                        f\"Проверить локали"):
+        app_source.index("with col2:")
+    ]
+    single_locale_block = app_source[
+        app_source.index("if st.button(\"Проверить локаль\""):
+        app_source.index("with c3:")
+    ]
+
+    assert "def record_telegram_failure" in app_source
+    assert "telegram_failures" in mass_check_block
+    assert "record_telegram_failure(data.get(\"keys\"" in mass_check_block
+    assert "telegram_failures" in group_check_block
+    assert "record_telegram_failure(changed_keys" in group_check_block
+    assert "record_telegram_failure({k}" in single_locale_block

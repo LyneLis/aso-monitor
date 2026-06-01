@@ -363,6 +363,23 @@ def save_apps_or_show_error(data, *, updated_keys=None, deleted_keys=None):
     return False
 
 
+def append_check_log(info, status, **extra):
+    entry = {"time": get_minsk_time(), "status": status}
+    entry.update({key: value for key, value in extra.items() if value})
+    info.setdefault("check_log", []).append(entry)
+    info["check_log"] = info["check_log"][-5:]
+
+
+def record_telegram_failure(keys, message):
+    keys_to_update = {key for key in keys if key in db}
+    if not keys_to_update:
+        return True
+    error_text = str(message)[:300]
+    for key in keys_to_update:
+        append_check_log(db[key], "❌ Telegram: ошибка отправки", error=error_text)
+    return save_apps_or_show_error(db, updated_keys=keys_to_update)
+
+
 def repo_load_errors(repository):
     return getattr(repository, "load_errors", {}) or {}
 
@@ -415,25 +432,26 @@ def app_display_name_for_info(info, cache=None):
 
 def send_visual_change_alerts(chat_id, changed, old_snapshot, new_snapshot, app_display_name, geo):
     geo_upper = geo.upper()
+    delivery_ok = True
     if "Иконка" in changed:
-        telegram.send_visual_diff(
+        delivery_ok = telegram.send_visual_diff(
             chat_id,
             old_snapshot.icon,
             new_snapshot.icon,
             "Иконка",
             app_display_name,
             geo_upper,
-        )
+        ) and delivery_ok
         time.sleep(1.5)
     if "Feature Graphic" in changed:
-        telegram.send_visual_diff(
+        delivery_ok = telegram.send_visual_diff(
             chat_id,
             old_snapshot.header_image,
             new_snapshot.header_image,
             "Feature Graphic",
             app_display_name,
             geo_upper,
-        )
+        ) and delivery_ok
         time.sleep(1.5)
     if "Скриншоты" in changed and (old_snapshot.screenshots or new_snapshot.screenshots):
         sent = telegram.send_screenshot_collages(
@@ -448,12 +466,14 @@ def send_visual_change_alerts(chat_id, changed, old_snapshot, new_snapshot, app_
                 f"⚠️ Не удалось отправить коллаж скриншотов: {app_display_name} [{geo_upper}]",
                 chat_id,
             )
+            delivery_ok = False
         time.sleep(2)
+    return delivery_ok
 
 
 def send_single_locale_alert(info, changed, outcome, *, app_display_name=None, skip_ai=False):
     if not outcome or not outcome.result.has_changes:
-        return
+        return True
 
     result = outcome.result
     new_snap = outcome.new_snapshot
@@ -468,9 +488,9 @@ def send_single_locale_alert(info, changed, outcome, *, app_display_name=None, s
     )
     if result.is_rollback:
         alert_msg += "\n\n⚠️ Тексты вернулись к одной из прошлых версий."
-    telegram.send_message(alert_msg, c_id)
+    delivery_ok = telegram.send_message(alert_msg, c_id)
 
-    send_visual_change_alerts(c_id, changed, old_snap, new_snap, display_name, info["geo"])
+    delivery_ok = send_visual_change_alerts(c_id, changed, old_snap, new_snap, display_name, info["geo"]) and delivery_ok
 
     if result.text_payload:
         report_content = format_single_locale_report(
@@ -480,22 +500,23 @@ def send_single_locale_alert(info, changed, outcome, *, app_display_name=None, s
             new_snap,
             get_minsk_time(),
         )
-        telegram.send_document(
+        delivery_ok = telegram.send_document(
             report_content,
             f"report_{info['package_id']}.txt",
             f"📄 Детальный отчет: {display_name}",
             c_id,
-        )
+        ) and delivery_ok
 
         if not skip_ai:
             tp = result.text_payload
             raw_ai_analysis = gemini.analyze_changes(
                 tp["old_t"], tp["new_t"], tp["old_s"], tp["new_s"], tp["old_d"], tp["new_d"]
             )
-            telegram.send_message(
+            delivery_ok = telegram.send_message(
                 f"🤖 Анализ ИИ (Сайт):\n\n{clean_ai_for_telegram(raw_ai_analysis)}",
                 c_id,
-            )
+            ) and delivery_ok
+    return delivery_ok
 
 
 # --- ИНТЕРФЕЙС ---
@@ -683,6 +704,8 @@ if st.button(
                     is_rollback=outcome.result.is_rollback,
                     app_display_name=app_display_name,
                 )
+                batch_key = (info['package_id'], info['chat_id'], str(info['package_id']).isdigit())
+                batched_alerts[batch_key].setdefault("keys", set()).add(key)
 
         progress.empty()
         status_box.empty()
@@ -698,16 +721,19 @@ if st.button(
                 summary_msg = f"🔔 ИЗМЕНЕНИЯ (Массовая проверка сайта) {os_icon}\n📦 {app_display_name}\n\n"
                 for geo, clist in data['changes'].items():
                     summary_msg += f"🌍 [{geo.upper()}]: {', '.join(clist)}\n"
-                telegram.send_message(summary_msg, c_id, chunk_sleep=1)
+                telegram_failures = []
+                if not telegram.send_message(summary_msg, c_id, chunk_sleep=1):
+                    telegram_failures.append("основной алерт")
 
                 if data['texts']:
                     full_report = format_changes_report(app_display_name, data['texts'])
-                    telegram.send_document(full_report, f"report_{pkg_id}.txt", f"📄 Отчет: {app_display_name}", c_id)
+                    if not telegram.send_document(full_report, f"report_{pkg_id}.txt", f"📄 Отчет: {app_display_name}", c_id):
+                        telegram_failures.append("файл отчета")
                     time.sleep(1)
 
                 for vis in data['visuals']:
                     if vis['type'] == 'diff':
-                        telegram.send_visual_diff(
+                        sent = telegram.send_visual_diff(
                             c_id,
                             vis['old'],
                             vis['new'],
@@ -715,6 +741,8 @@ if st.button(
                             app_display_name,
                             vis['geo'].upper(),
                         )
+                        if not sent:
+                            telegram_failures.append(f"{vis['name']} [{vis['geo'].upper()}]")
                         time.sleep(1.5)
                     elif vis['type'] == 'screens' and (vis.get('old') or vis.get('new')):
                         sent = telegram.send_screenshot_collages(
@@ -725,23 +753,30 @@ if st.button(
                             vis['geo'].upper(),
                         )
                         if not sent:
-                            telegram.send_message(
+                            warning_sent = telegram.send_message(
                                 f"⚠️ Не удалось отправить коллаж скриншотов: {app_display_name} [{vis['geo'].upper()}]",
                                 c_id,
                             )
+                            if not warning_sent:
+                                telegram_failures.append(f"ошибка скриншотов [{vis['geo'].upper()}]")
+                            telegram_failures.append(f"скриншоты [{vis['geo'].upper()}]")
                         time.sleep(2)
 
                 if data['texts']:
                     ai_msg = gemini.analyze_batched_changes(data['texts'])
                     if not gemini.is_error_response(ai_msg):
-                        telegram.send_message(
+                        if not telegram.send_message(
                             f"🤖 Пакетный анализ ({app_display_name}):\n\n{clean_ai_for_telegram(ai_msg)}",
                             c_id,
-                        )
+                        ):
+                            telegram_failures.append("AI-разбор")
                         st.toast(f"⏳ Ожидание 40 секунд для сброса лимитов ИИ ({app_display_name})...")
                         time.sleep(40)
                     else:
-                        telegram.send_message(f"⚠️ ИИ вернул ошибку: {ai_msg}", c_id)
+                        if not telegram.send_message(f"⚠️ ИИ вернул ошибку: {ai_msg}", c_id):
+                            telegram_failures.append("сообщение об ошибке ИИ")
+                if telegram_failures:
+                    record_telegram_failure(data.get("keys", set()), "Не удалось отправить: " + ", ".join(telegram_failures))
                 alert_progress.progress(alert_index / total_alerts, text=f"Уведомления: {alert_index}/{total_alerts}")
 
             alert_progress.empty()
@@ -825,6 +860,7 @@ def render_app_groups(app_groups, os_icon):
                             errors = 0
                             batched_ai = {}
                             visual_alerts = []
+                            changed_keys = set()
                             progress = st.progress(0, text="Подготовка проверки")
                             status_box = st.empty()
                             for idx, k in enumerate(keys, start=1):
@@ -838,6 +874,7 @@ def render_app_groups(app_groups, os_icon):
                                 if txt_payload:
                                     batched_ai[db[k]['geo']] = txt_payload
                                 if u > 0 and outcome:
+                                    changed_keys.add(k)
                                     visual_alerts.append((
                                         db[k]['geo'],
                                         changed_list,
@@ -845,42 +882,52 @@ def render_app_groups(app_groups, os_icon):
                                         outcome.new_snapshot,
                                     ))
                                 progress.progress(idx / len(keys), text=f"Проверено локалей: {idx}/{len(keys)}")
+                                if not save_apps_or_show_error(db, updated_keys={k}):
+                                    progress.empty()
+                                    status_box.empty()
+                                    st.stop()
                             progress.empty()
                             status_box.empty()
-                        if save_apps_or_show_error(db, updated_keys=keys):
-                            if upd > 0:
-                                app_display_name = app_display_name_for_group(pkg_id, chat_id, keys)
-                                for geo, changed_list, old_snap, new_snap in visual_alerts:
-                                    send_visual_change_alerts(
-                                        chat_id,
-                                        changed_list,
-                                        old_snap,
-                                        new_snap,
-                                        app_display_name,
-                                        geo,
-                                    )
-                            if upd > 0 and batched_ai:
-                                full_report = format_changes_report(app_display_name, batched_ai)
-                                telegram.send_document(
-                                    full_report,
-                                    f"report_{pkg_id}.txt",
-                                    f"📄 Отчет: {app_display_name}",
+                        if upd > 0:
+                            app_display_name = app_display_name_for_group(pkg_id, chat_id, keys)
+                            telegram_failures = []
+                            for geo, changed_list, old_snap, new_snap in visual_alerts:
+                                sent = send_visual_change_alerts(
                                     chat_id,
+                                    changed_list,
+                                    old_snap,
+                                    new_snap,
+                                    app_display_name,
+                                    geo,
                                 )
-                                time.sleep(1)
-                                st.info("Готовлю пакетный AI-разбор")
-                                ai_msg = gemini.analyze_batched_changes(batched_ai)
-                                telegram.send_message(
-                                    f"🤖 Пакетный анализ ({app_display_name}):\n\n{clean_ai_for_telegram(ai_msg)}",
-                                    chat_id,
-                                )
-                            if errors:
-                                set_flash("warning", f"Проверка завершена. Изменений: {upd}. Ошибок: {errors}.")
-                            elif upd:
-                                set_flash("success", f"Проверка завершена. Изменений: {upd}.")
-                            else:
-                                set_flash("info", "Проверка завершена. Изменений не обнаружено.")
-                            st.rerun()
+                                if not sent:
+                                    telegram_failures.append(f"визуалы [{geo.upper()}]")
+                        if upd > 0 and batched_ai:
+                            full_report = format_changes_report(app_display_name, batched_ai)
+                            if not telegram.send_document(
+                                full_report,
+                                f"report_{pkg_id}.txt",
+                                f"📄 Отчет: {app_display_name}",
+                                chat_id,
+                            ):
+                                telegram_failures.append("файл отчета")
+                            time.sleep(1)
+                            st.info("Готовлю пакетный AI-разбор")
+                            ai_msg = gemini.analyze_batched_changes(batched_ai)
+                            if not telegram.send_message(
+                                f"🤖 Пакетный анализ ({app_display_name}):\n\n{clean_ai_for_telegram(ai_msg)}",
+                                chat_id,
+                            ):
+                                telegram_failures.append("AI-разбор")
+                        if upd > 0 and telegram_failures:
+                            record_telegram_failure(changed_keys, "Не удалось отправить: " + ", ".join(telegram_failures))
+                        if errors:
+                            set_flash("warning", f"Проверка завершена. Изменений: {upd}. Ошибок: {errors}.")
+                        elif upd:
+                            set_flash("success", f"Проверка завершена. Изменений: {upd}.")
+                        else:
+                            set_flash("info", "Проверка завершена. Изменений не обнаружено.")
+                        st.rerun()
                 
                 with col2:
                     saved_audit = group_ai_audit(db, keys)
@@ -940,12 +987,14 @@ def render_app_groups(app_groups, os_icon):
                             u, changed, _, outcome = run_site_check_for_item(info, item_key=k)
                             if save_apps_or_show_error(db, updated_keys={k}):
                                 if u:
-                                    send_single_locale_alert(
+                                    sent = send_single_locale_alert(
                                         info,
                                         changed,
                                         outcome,
                                         app_display_name=app_display_name_for_info(info),
                                     )
+                                    if not sent:
+                                        record_telegram_failure({k}, "Не удалось отправить уведомление по локали")
                                 if latest_log_status(info).startswith("❌"):
                                     set_flash("warning", f"{info['geo'].upper()}: проверка завершилась с ошибкой.")
                                 elif u:

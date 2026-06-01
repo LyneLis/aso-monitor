@@ -72,6 +72,14 @@ def _collage_columns(count: int) -> int:
 
 
 def build_screenshot_collage_bytes(screenshot_urls: List[str]) -> bytes:
+    collage = _try_build_screenshot_collage_bytes(screenshot_urls)
+    return collage or _placeholder_collage_bytes()
+
+
+def _try_build_screenshot_collage_bytes(screenshot_urls: List[str]) -> Optional[bytes]:
+    if not screenshot_urls:
+        return _placeholder_collage_bytes()
+
     limited_urls = list(screenshot_urls or [])[:SCREENSHOT_COLLAGE_MAX_COUNT]
     images = [
         image
@@ -79,7 +87,7 @@ def build_screenshot_collage_bytes(screenshot_urls: List[str]) -> bytes:
         if image is not None
     ]
     if not images:
-        return _placeholder_collage_bytes()
+        return None
 
     thumbs = [ImageOps.contain(image, SCREENSHOT_COLLAGE_THUMB_SIZE) for image in images]
     columns = _collage_columns(len(thumbs))
@@ -301,21 +309,25 @@ class TelegramClient:
     ) -> bool:
         if not chat_id:
             return False
-        old_collage = build_screenshot_collage_bytes(old_screenshots)
-        new_collage = build_screenshot_collage_bytes(new_screenshots)
+        old_collage = _try_build_screenshot_collage_bytes(old_screenshots)
+        new_collage = _try_build_screenshot_collage_bytes(new_screenshots)
         geo_upper = geo.upper()
-        old_sent = self._send_collage_photo(
-            chat_id,
-            old_collage,
-            "screenshots_before.jpg",
-            f"🔴 БЫЛО | Скриншоты\n📦 {pkg_id} [{geo_upper}]",
-        )
-        new_sent = self._send_collage_photo(
-            chat_id,
-            new_collage,
-            "screenshots_after.jpg",
-            f"🟢 СТАЛО | Скриншоты\n📦 {pkg_id} [{geo_upper}]",
-        )
+        old_sent = False
+        new_sent = False
+        if old_collage is not None:
+            old_sent = self._send_collage_photo(
+                chat_id,
+                old_collage,
+                "screenshots_before.jpg",
+                f"🔴 БЫЛО | Скриншоты\n📦 {pkg_id} [{geo_upper}]",
+            )
+        if new_collage is not None:
+            new_sent = self._send_collage_photo(
+                chat_id,
+                new_collage,
+                "screenshots_after.jpg",
+                f"🟢 СТАЛО | Скриншоты\n📦 {pkg_id} [{geo_upper}]",
+            )
         if not old_sent and old_screenshots:
             old_sent = self.send_screenshots(
                 chat_id,
