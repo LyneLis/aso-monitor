@@ -1,5 +1,6 @@
 import streamlit as st
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 
 from core import (
@@ -364,6 +365,52 @@ def save_apps_or_show_error(data, *, updated_keys=None, deleted_keys=None):
     return False
 
 
+@contextmanager
+def cached_repo_save(repository, data):
+    cached_save = getattr(repository, "cached_save", None)
+    if callable(cached_save):
+        with cached_save(data):
+            yield
+        return
+
+    original_save_apps = getattr(repository, "save_apps", None)
+    if not callable(original_save_apps):
+        yield
+        return
+
+    cached_data = dict(data)
+
+    def save_apps_with_cache(next_data, *, updated_keys=None, deleted_keys=None):
+        nonlocal cached_data
+        keys_to_update = {str(key) for key in updated_keys or []}
+        keys_to_delete = {str(key) for key in deleted_keys or []}
+        if not keys_to_update and not keys_to_delete:
+            return original_save_apps(next_data)
+
+        merged = dict(cached_data)
+        for key in keys_to_update:
+            if key in next_data:
+                merged[key] = next_data[key]
+        for key in keys_to_delete:
+            merged.pop(key, None)
+
+        saved = original_save_apps(merged)
+        if saved:
+            cached_data = dict(merged)
+        return saved
+
+    try:
+        repository.save_apps = save_apps_with_cache
+    except Exception:
+        yield
+        return
+
+    try:
+        yield
+    finally:
+        repository.save_apps = original_save_apps
+
+
 def append_check_log(info, status, **extra):
     entry = {"time": get_minsk_time(), "status": status}
     entry.update({key: value for key, value in extra.items() if value})
@@ -676,7 +723,7 @@ if st.button(
         progress = st.progress(0, text="Подготовка проверки")
         status_box = st.empty()
 
-        with repo.cached_save(db):
+        with cached_repo_save(repo, db):
             for idx, key in enumerate(keys_to_check, start=1):
                 info = db[key]
                 title = info.get("current", {}).get("title") or info["package_id"]
@@ -865,7 +912,7 @@ def render_app_groups(app_groups, os_icon):
                             changed_keys = set()
                             progress = st.progress(0, text="Подготовка проверки")
                             status_box = st.empty()
-                            with repo.cached_save(db):
+                            with cached_repo_save(repo, db):
                                 for idx, k in enumerate(keys, start=1):
                                     locale_info = db[k]
                                     title = locale_info.get("current", {}).get("title") or locale_info["package_id"]

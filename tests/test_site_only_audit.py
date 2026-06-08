@@ -34,11 +34,11 @@ def test_site_checks_save_before_telegram_notifications():
     ]
 
     assert mass_check_block.index("save_apps_or_show_error") < mass_check_block.index("telegram.send_message")
-    assert "with repo.cached_save(db):" in mass_check_block
+    assert "with cached_repo_save(repo, db):" in mass_check_block
     assert "updated_keys={key}" in mass_check_block
     assert "updated_keys=db.keys()" not in mass_check_block
     assert group_check_block.index("save_apps_or_show_error") < group_check_block.index("telegram.send_message")
-    assert "with repo.cached_save(db):" in group_check_block
+    assert "with cached_repo_save(repo, db):" in group_check_block
     assert "updated_keys={k}" in group_check_block
     assert "updated_keys=keys" not in group_check_block
     assert group_check_block.index("telegram.send_document") < group_check_block.index("gemini.analyze_batched_changes")
@@ -119,3 +119,16 @@ def test_site_telegram_delivery_failures_are_recorded():
     assert "telegram_failures" in group_check_block
     assert "record_telegram_failure(changed_keys" in group_check_block
     assert "record_telegram_failure({k}" in single_locale_block
+
+
+def test_site_cached_save_has_compatibility_fallback():
+    root = Path(__file__).resolve().parents[1]
+    app_source = (root / "app.py").read_text()
+    helper_block = app_source[
+        app_source.index("def cached_repo_save"):
+        app_source.index("def append_check_log")
+    ]
+
+    assert 'getattr(repository, "cached_save", None)' in helper_block
+    assert "repository.save_apps = save_apps_with_cache" in helper_block
+    assert "original_save_apps(merged)" in helper_block
