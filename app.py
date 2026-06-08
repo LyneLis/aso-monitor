@@ -32,7 +32,7 @@ users_dict = repo.load_users()
 STALE_CHECK_HOURS = 24
 ADD_APP_PREVIEW_KEY = "add_app_preview"
 DEFAULT_PREVIEW_LOCALE = "en-US"
-SHEETS_BATCH_SAVE_LOCALES = 10
+SHEETS_RATE_LIMIT_RETRY_SECONDS = 65
 
 
 def owner_name_for(chat_id):
@@ -358,9 +358,23 @@ def render_overview(android_groups, ios_groups):
     col_users.metric("Владельцев", owner_count)
 
 
+def is_google_sheets_rate_limit(error_message):
+    text = str(error_message or "")
+    return "429" in text or "RATE_LIMIT_EXCEEDED" in text or "Quota exceeded" in text
+
+
 def save_apps_or_show_error(data, *, updated_keys=None, deleted_keys=None):
-    if repo.save_apps(data, updated_keys=updated_keys, deleted_keys=deleted_keys):
-        return True
+    for attempt in range(2):
+        if repo.save_apps(data, updated_keys=updated_keys, deleted_keys=deleted_keys):
+            return True
+        if attempt == 0 and is_google_sheets_rate_limit(repo.last_error):
+            st.warning(
+                "Google Sheets временно ограничил сохранение. "
+                f"Жду {SHEETS_RATE_LIMIT_RETRY_SECONDS} секунд и повторяю."
+            )
+            time.sleep(SHEETS_RATE_LIMIT_RETRY_SECONDS)
+            continue
+        break
     details = f" ({repo.last_error})" if repo.last_error else ""
     st.error(f"Не удалось сохранить изменения в Google Sheets{details}")
     return False
@@ -752,8 +766,6 @@ if st.button(
                 progress.progress(idx / total_checks, text=f"Проверено локалей: {idx}/{total_checks}")
 
                 pending_save_keys.add(key)
-                if len(pending_save_keys) >= SHEETS_BATCH_SAVE_LOCALES:
-                    flush_pending_app_saves(db, pending_save_keys, progress=progress, status_box=status_box)
 
                 if u > 0 and outcome:
                     app_display_name = app_display_name_for_info(info, display_name_cache)
@@ -771,6 +783,7 @@ if st.button(
                     )
                     batch_key = (info['package_id'], info['chat_id'], str(info['package_id']).isdigit())
                     batched_alerts[batch_key].setdefault("keys", set()).add(key)
+            status_box.info("Сохраняю изменения в Google Sheets...")
             flush_pending_app_saves(db, pending_save_keys, progress=progress, status_box=status_box)
 
         progress.empty()
@@ -951,8 +964,7 @@ def render_app_groups(app_groups, os_icon):
                                         ))
                                     progress.progress(idx / len(keys), text=f"Проверено локалей: {idx}/{len(keys)}")
                                     pending_save_keys.add(k)
-                                    if len(pending_save_keys) >= SHEETS_BATCH_SAVE_LOCALES:
-                                        flush_pending_app_saves(db, pending_save_keys, progress=progress, status_box=status_box)
+                                status_box.info("Сохраняю изменения в Google Sheets...")
                                 flush_pending_app_saves(db, pending_save_keys, progress=progress, status_box=status_box)
                             progress.empty()
                             status_box.empty()

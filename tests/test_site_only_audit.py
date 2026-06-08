@@ -37,14 +37,16 @@ def test_site_checks_save_before_telegram_notifications():
     assert "with cached_repo_save(repo, db):" in mass_check_block
     assert "pending_save_keys.add(key)" in mass_check_block
     assert "flush_pending_app_saves(db, pending_save_keys" in mass_check_block
-    assert "SHEETS_BATCH_SAVE_LOCALES" in mass_check_block
+    assert "Сохраняю изменения в Google Sheets" in mass_check_block
+    assert "SHEETS_BATCH_SAVE_LOCALES" not in mass_check_block
     assert "updated_keys={key}" not in mass_check_block
     assert "updated_keys=db.keys()" not in mass_check_block
     assert group_check_block.index("flush_pending_app_saves") < group_check_block.index("telegram.send_message")
     assert "with cached_repo_save(repo, db):" in group_check_block
     assert "pending_save_keys.add(k)" in group_check_block
     assert "flush_pending_app_saves(db, pending_save_keys" in group_check_block
-    assert "SHEETS_BATCH_SAVE_LOCALES" in group_check_block
+    assert "Сохраняю изменения в Google Sheets" in group_check_block
+    assert "SHEETS_BATCH_SAVE_LOCALES" not in group_check_block
     assert "updated_keys={k}" not in group_check_block
     assert "updated_keys=keys" not in group_check_block
     assert group_check_block.index("telegram.send_document") < group_check_block.index("gemini.analyze_batched_changes")
@@ -148,7 +150,21 @@ def test_site_batch_flushes_google_sheets_writes():
         app_source.index("def cached_repo_save")
     ]
 
-    assert "SHEETS_BATCH_SAVE_LOCALES = 10" in app_source
+    assert "SHEETS_BATCH_SAVE_LOCALES" not in app_source
     assert "keys_to_save = set(pending_keys)" in helper_block
     assert "pending_keys.clear()" in helper_block
     assert "updated_keys=keys_to_save" in helper_block
+
+
+def test_site_retries_google_sheets_rate_limits():
+    root = Path(__file__).resolve().parents[1]
+    app_source = (root / "app.py").read_text()
+    save_block = app_source[
+        app_source.index("def is_google_sheets_rate_limit"):
+        app_source.index("def flush_pending_app_saves")
+    ]
+
+    assert "SHEETS_RATE_LIMIT_RETRY_SECONDS = 65" in app_source
+    assert '"RATE_LIMIT_EXCEEDED"' in save_block
+    assert '"Quota exceeded"' in save_block
+    assert "time.sleep(SHEETS_RATE_LIMIT_RETRY_SECONDS)" in save_block
