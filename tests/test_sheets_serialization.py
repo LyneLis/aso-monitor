@@ -153,3 +153,46 @@ def test_streamlit_repo_save_merges_updated_keys_with_latest_sheet():
     assert by_package["com.app"]["title"] == "Remote title"
     assert by_package["com.app"]["summary"] == "Fresh"
     assert by_package["com.new"]["title"] == "New app"
+
+
+def test_streamlit_repo_cached_save_merges_updates_without_reads():
+    existing = tracked_info_from_row("com.app", "us", "1", title="Existing app")
+    first_update = tracked_info_from_row("com.one", "us", "1", title="First update")
+    second_update = tracked_info_from_row("com.two", "us", "1", title="Second update")
+
+    class Connection:
+        def __init__(self):
+            self.read_count = 0
+            self.updates = []
+
+        def read(self, worksheet, ttl):
+            self.read_count += 1
+            raise AssertionError("cached save should not read apps")
+
+        def update(self, worksheet, data):
+            assert worksheet == "apps"
+            self.updates.append(data.to_dict("records"))
+
+    conn = Connection()
+    repo = StreamlitAppsRepository(conn, True)
+    initial_data = {"com.app_us_1": existing}
+
+    with repo.cached_save(initial_data):
+        first_data = {
+            "com.app_us_1": existing,
+            "com.one_us_1": first_update,
+        }
+        second_data = {
+            "com.app_us_1": existing,
+            "com.one_us_1": first_update,
+            "com.two_us_1": second_update,
+        }
+
+        assert repo.save_apps(first_data, updated_keys={"com.one_us_1"})
+        assert repo.save_apps(second_data, updated_keys={"com.two_us_1"})
+
+    final_rows = {row["package_id"]: row for row in conn.updates[-1]}
+    assert conn.read_count == 0
+    assert final_rows["com.app"]["title"] == "Existing app"
+    assert final_rows["com.one"]["title"] == "First update"
+    assert final_rows["com.two"]["title"] == "Second update"

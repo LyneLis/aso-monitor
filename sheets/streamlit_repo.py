@@ -1,4 +1,5 @@
-from typing import Any, Dict, Iterable, Optional, Set
+from contextlib import contextmanager
+from typing import Any, Dict, Iterable, Iterator, Optional, Set
 
 import pandas as pd
 
@@ -11,6 +12,7 @@ class StreamlitAppsRepository:
         self.available = available
         self.last_error: Optional[str] = None
         self.load_errors: Dict[str, str] = {}
+        self._apps_save_cache: Optional[Dict[str, Dict[str, Any]]] = None
 
     @classmethod
     def connect(cls) -> "StreamlitAppsRepository":
@@ -92,6 +94,20 @@ class StreamlitAppsRepository:
     def _key_set(keys: Optional[Iterable[str]]) -> Set[str]:
         return {str(key) for key in keys or []}
 
+    def begin_cached_save(self, data: Dict[str, Dict[str, Any]]) -> None:
+        self._apps_save_cache = dict(data)
+
+    def end_cached_save(self) -> None:
+        self._apps_save_cache = None
+
+    @contextmanager
+    def cached_save(self, data: Dict[str, Dict[str, Any]]) -> Iterator[None]:
+        self.begin_cached_save(data)
+        try:
+            yield
+        finally:
+            self.end_cached_save()
+
     def save_apps(
         self,
         data: Dict[str, Dict[str, Any]],
@@ -105,8 +121,9 @@ class StreamlitAppsRepository:
         try:
             keys_to_update = self._key_set(updated_keys)
             keys_to_delete = self._key_set(deleted_keys)
+            cache_active = self._apps_save_cache is not None
             if keys_to_update or keys_to_delete:
-                data_to_save = self._read_apps()
+                data_to_save = dict(self._apps_save_cache) if cache_active else self._read_apps()
                 for key in keys_to_update:
                     if key in data:
                         data_to_save[key] = data[key]
@@ -117,6 +134,8 @@ class StreamlitAppsRepository:
 
             rows = [tracked_info_to_apps_row(info) for info in data_to_save.values()]
             self._conn.update(worksheet="apps", data=pd.DataFrame(rows))
+            if cache_active:
+                self._apps_save_cache = dict(data_to_save)
             self.last_error = None
             return True
         except Exception as e:

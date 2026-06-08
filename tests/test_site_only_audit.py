@@ -34,9 +34,11 @@ def test_site_checks_save_before_telegram_notifications():
     ]
 
     assert mass_check_block.index("save_apps_or_show_error") < mass_check_block.index("telegram.send_message")
+    assert "with repo.cached_save(db):" in mass_check_block
     assert "updated_keys={key}" in mass_check_block
     assert "updated_keys=db.keys()" not in mass_check_block
     assert group_check_block.index("save_apps_or_show_error") < group_check_block.index("telegram.send_message")
+    assert "with repo.cached_save(db):" in group_check_block
     assert "updated_keys={k}" in group_check_block
     assert "updated_keys=keys" not in group_check_block
     assert group_check_block.index("telegram.send_document") < group_check_block.index("gemini.analyze_batched_changes")

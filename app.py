@@ -676,37 +676,38 @@ if st.button(
         progress = st.progress(0, text="Подготовка проверки")
         status_box = st.empty()
 
-        for idx, key in enumerate(keys_to_check, start=1):
-            info = db[key]
-            title = info.get("current", {}).get("title") or info["package_id"]
-            status_box.info(f"Проверка {idx}/{total_checks}: {title} · {info['geo'].upper()}")
-            u, changed_list, txt_payload, outcome = run_site_check_for_item(info, item_key=key)
-            updates_count += u
-            if latest_log_status(info).startswith("❌"):
-                errors_count += 1
-            progress.progress(idx / total_checks, text=f"Проверено локалей: {idx}/{total_checks}")
+        with repo.cached_save(db):
+            for idx, key in enumerate(keys_to_check, start=1):
+                info = db[key]
+                title = info.get("current", {}).get("title") or info["package_id"]
+                status_box.info(f"Проверка {idx}/{total_checks}: {title} · {info['geo'].upper()}")
+                u, changed_list, txt_payload, outcome = run_site_check_for_item(info, item_key=key)
+                updates_count += u
+                if latest_log_status(info).startswith("❌"):
+                    errors_count += 1
+                progress.progress(idx / total_checks, text=f"Проверено локалей: {idx}/{total_checks}")
 
-            if not save_apps_or_show_error(db, updated_keys={key}):
-                progress.empty()
-                status_box.empty()
-                st.stop()
+                if not save_apps_or_show_error(db, updated_keys={key}):
+                    progress.empty()
+                    status_box.empty()
+                    st.stop()
 
-            if u > 0 and outcome:
-                app_display_name = app_display_name_for_info(info, display_name_cache)
-                add_changed_locale_to_batch(
-                    batched_alerts,
-                    info['package_id'],
-                    info['chat_id'],
-                    info['geo'],
-                    outcome.old_snapshot,
-                    outcome.new_snapshot,
-                    changed_list,
-                    txt_payload,
-                    is_rollback=outcome.result.is_rollback,
-                    app_display_name=app_display_name,
-                )
-                batch_key = (info['package_id'], info['chat_id'], str(info['package_id']).isdigit())
-                batched_alerts[batch_key].setdefault("keys", set()).add(key)
+                if u > 0 and outcome:
+                    app_display_name = app_display_name_for_info(info, display_name_cache)
+                    add_changed_locale_to_batch(
+                        batched_alerts,
+                        info['package_id'],
+                        info['chat_id'],
+                        info['geo'],
+                        outcome.old_snapshot,
+                        outcome.new_snapshot,
+                        changed_list,
+                        txt_payload,
+                        is_rollback=outcome.result.is_rollback,
+                        app_display_name=app_display_name,
+                    )
+                    batch_key = (info['package_id'], info['chat_id'], str(info['package_id']).isdigit())
+                    batched_alerts[batch_key].setdefault("keys", set()).add(key)
 
         progress.empty()
         status_box.empty()
@@ -864,29 +865,30 @@ def render_app_groups(app_groups, os_icon):
                             changed_keys = set()
                             progress = st.progress(0, text="Подготовка проверки")
                             status_box = st.empty()
-                            for idx, k in enumerate(keys, start=1):
-                                locale_info = db[k]
-                                title = locale_info.get("current", {}).get("title") or locale_info["package_id"]
-                                status_box.info(f"Проверка {idx}/{len(keys)}: {title} · {locale_info['geo'].upper()}")
-                                u, changed_list, txt_payload, outcome = run_site_check_for_item(db[k], item_key=k)
-                                upd += u
-                                if latest_log_status(db[k]).startswith("❌"):
-                                    errors += 1
-                                if txt_payload:
-                                    batched_ai[db[k]['geo']] = txt_payload
-                                if u > 0 and outcome:
-                                    changed_keys.add(k)
-                                    visual_alerts.append((
-                                        db[k]['geo'],
-                                        changed_list,
-                                        outcome.old_snapshot,
-                                        outcome.new_snapshot,
-                                    ))
-                                progress.progress(idx / len(keys), text=f"Проверено локалей: {idx}/{len(keys)}")
-                                if not save_apps_or_show_error(db, updated_keys={k}):
-                                    progress.empty()
-                                    status_box.empty()
-                                    st.stop()
+                            with repo.cached_save(db):
+                                for idx, k in enumerate(keys, start=1):
+                                    locale_info = db[k]
+                                    title = locale_info.get("current", {}).get("title") or locale_info["package_id"]
+                                    status_box.info(f"Проверка {idx}/{len(keys)}: {title} · {locale_info['geo'].upper()}")
+                                    u, changed_list, txt_payload, outcome = run_site_check_for_item(db[k], item_key=k)
+                                    upd += u
+                                    if latest_log_status(db[k]).startswith("❌"):
+                                        errors += 1
+                                    if txt_payload:
+                                        batched_ai[db[k]['geo']] = txt_payload
+                                    if u > 0 and outcome:
+                                        changed_keys.add(k)
+                                        visual_alerts.append((
+                                            db[k]['geo'],
+                                            changed_list,
+                                            outcome.old_snapshot,
+                                            outcome.new_snapshot,
+                                        ))
+                                    progress.progress(idx / len(keys), text=f"Проверено локалей: {idx}/{len(keys)}")
+                                    if not save_apps_or_show_error(db, updated_keys={k}):
+                                        progress.empty()
+                                        status_box.empty()
+                                        st.stop()
                             progress.empty()
                             status_box.empty()
                         if upd > 0:
