@@ -32,6 +32,7 @@ users_dict = repo.load_users()
 STALE_CHECK_HOURS = 24
 ADD_APP_PREVIEW_KEY = "add_app_preview"
 DEFAULT_PREVIEW_LOCALE = "en-US"
+SHEETS_BATCH_SAVE_LOCALES = 10
 
 
 def owner_name_for(chat_id):
@@ -362,6 +363,21 @@ def save_apps_or_show_error(data, *, updated_keys=None, deleted_keys=None):
         return True
     details = f" ({repo.last_error})" if repo.last_error else ""
     st.error(f"Не удалось сохранить изменения в Google Sheets{details}")
+    return False
+
+
+def flush_pending_app_saves(data, pending_keys, *, progress=None, status_box=None):
+    if not pending_keys:
+        return True
+    keys_to_save = set(pending_keys)
+    pending_keys.clear()
+    if save_apps_or_show_error(data, updated_keys=keys_to_save):
+        return True
+    if progress is not None:
+        progress.empty()
+    if status_box is not None:
+        status_box.empty()
+    st.stop()
     return False
 
 
@@ -722,6 +738,7 @@ if st.button(
         total_checks = len(keys_to_check)
         progress = st.progress(0, text="Подготовка проверки")
         status_box = st.empty()
+        pending_save_keys = set()
 
         with cached_repo_save(repo, db):
             for idx, key in enumerate(keys_to_check, start=1):
@@ -734,10 +751,9 @@ if st.button(
                     errors_count += 1
                 progress.progress(idx / total_checks, text=f"Проверено локалей: {idx}/{total_checks}")
 
-                if not save_apps_or_show_error(db, updated_keys={key}):
-                    progress.empty()
-                    status_box.empty()
-                    st.stop()
+                pending_save_keys.add(key)
+                if len(pending_save_keys) >= SHEETS_BATCH_SAVE_LOCALES:
+                    flush_pending_app_saves(db, pending_save_keys, progress=progress, status_box=status_box)
 
                 if u > 0 and outcome:
                     app_display_name = app_display_name_for_info(info, display_name_cache)
@@ -755,6 +771,7 @@ if st.button(
                     )
                     batch_key = (info['package_id'], info['chat_id'], str(info['package_id']).isdigit())
                     batched_alerts[batch_key].setdefault("keys", set()).add(key)
+            flush_pending_app_saves(db, pending_save_keys, progress=progress, status_box=status_box)
 
         progress.empty()
         status_box.empty()
@@ -912,6 +929,7 @@ def render_app_groups(app_groups, os_icon):
                             changed_keys = set()
                             progress = st.progress(0, text="Подготовка проверки")
                             status_box = st.empty()
+                            pending_save_keys = set()
                             with cached_repo_save(repo, db):
                                 for idx, k in enumerate(keys, start=1):
                                     locale_info = db[k]
@@ -932,10 +950,10 @@ def render_app_groups(app_groups, os_icon):
                                             outcome.new_snapshot,
                                         ))
                                     progress.progress(idx / len(keys), text=f"Проверено локалей: {idx}/{len(keys)}")
-                                    if not save_apps_or_show_error(db, updated_keys={k}):
-                                        progress.empty()
-                                        status_box.empty()
-                                        st.stop()
+                                    pending_save_keys.add(k)
+                                    if len(pending_save_keys) >= SHEETS_BATCH_SAVE_LOCALES:
+                                        flush_pending_app_saves(db, pending_save_keys, progress=progress, status_box=status_box)
+                                flush_pending_app_saves(db, pending_save_keys, progress=progress, status_box=status_box)
                             progress.empty()
                             status_box.empty()
                         if upd > 0:

@@ -33,13 +33,19 @@ def test_site_checks_save_before_telegram_notifications():
         app_source.index("with c3:")
     ]
 
-    assert mass_check_block.index("save_apps_or_show_error") < mass_check_block.index("telegram.send_message")
+    assert mass_check_block.index("flush_pending_app_saves") < mass_check_block.index("telegram.send_message")
     assert "with cached_repo_save(repo, db):" in mass_check_block
-    assert "updated_keys={key}" in mass_check_block
+    assert "pending_save_keys.add(key)" in mass_check_block
+    assert "flush_pending_app_saves(db, pending_save_keys" in mass_check_block
+    assert "SHEETS_BATCH_SAVE_LOCALES" in mass_check_block
+    assert "updated_keys={key}" not in mass_check_block
     assert "updated_keys=db.keys()" not in mass_check_block
-    assert group_check_block.index("save_apps_or_show_error") < group_check_block.index("telegram.send_message")
+    assert group_check_block.index("flush_pending_app_saves") < group_check_block.index("telegram.send_message")
     assert "with cached_repo_save(repo, db):" in group_check_block
-    assert "updated_keys={k}" in group_check_block
+    assert "pending_save_keys.add(k)" in group_check_block
+    assert "flush_pending_app_saves(db, pending_save_keys" in group_check_block
+    assert "SHEETS_BATCH_SAVE_LOCALES" in group_check_block
+    assert "updated_keys={k}" not in group_check_block
     assert "updated_keys=keys" not in group_check_block
     assert group_check_block.index("telegram.send_document") < group_check_block.index("gemini.analyze_batched_changes")
     assert single_locale_block.index("save_apps_or_show_error") < single_locale_block.index("send_single_locale_alert")
@@ -132,3 +138,17 @@ def test_site_cached_save_has_compatibility_fallback():
     assert 'getattr(repository, "cached_save", None)' in helper_block
     assert "repository.save_apps = save_apps_with_cache" in helper_block
     assert "original_save_apps(merged)" in helper_block
+
+
+def test_site_batch_flushes_google_sheets_writes():
+    root = Path(__file__).resolve().parents[1]
+    app_source = (root / "app.py").read_text()
+    helper_block = app_source[
+        app_source.index("def flush_pending_app_saves"):
+        app_source.index("def cached_repo_save")
+    ]
+
+    assert "SHEETS_BATCH_SAVE_LOCALES = 10" in app_source
+    assert "keys_to_save = set(pending_keys)" in helper_block
+    assert "pending_keys.clear()" in helper_block
+    assert "updated_keys=keys_to_save" in helper_block
