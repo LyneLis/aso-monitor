@@ -36,6 +36,24 @@ def test_rollback_web():
     assert r.is_rollback
 
 
+def test_detect_changes_ignores_icon_url_change_when_pixel_hash_matches():
+    old = AppSnapshot(icon="https://cdn.example.com/icon-v1.jpg", icon_hash="pxsha256:same")
+    new = AppSnapshot(icon="https://cdn.example.com/icon-v2.jpg", icon_hash="pxsha256:same")
+
+    r = detect_changes(old, new, [], label_style="bot")
+
+    assert "Иконка" not in r.changed
+
+
+def test_detect_changes_reports_icon_change_when_pixel_hash_differs():
+    old = AppSnapshot(icon="https://cdn.example.com/icon-v1.jpg", icon_hash="pxsha256:old")
+    new = AppSnapshot(icon="https://cdn.example.com/icon-v2.jpg", icon_hash="pxsha256:new")
+
+    r = detect_changes(old, new, [], label_style="bot")
+
+    assert "Иконка" in r.changed
+
+
 def test_table_error_skips_diff():
     old = AppSnapshot()
     new = AppSnapshot(title="T", summary="S", description="D")
@@ -49,3 +67,15 @@ def test_fill_missing_assets():
     fill_missing_assets(current, AppSnapshot(icon="http://i", screenshots=["s1"]))
     assert current["icon"] == "http://i"
     assert current["screenshots"] == ["s1"]
+
+
+def test_fill_missing_assets_refreshes_equivalent_icon_url_and_hash():
+    current = {"icon": "https://cdn.example.com/icon-v1.jpg", "icon_hash": "pxsha256:same"}
+
+    fill_missing_assets(
+        current,
+        AppSnapshot(icon="https://cdn.example.com/icon-v2.jpg", icon_hash="pxsha256:same"),
+    )
+
+    assert current["icon"] == "https://cdn.example.com/icon-v2.jpg"
+    assert current["icon_hash"] == "pxsha256:same"

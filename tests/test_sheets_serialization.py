@@ -10,10 +10,18 @@ def test_parse_json_list_default():
 
 
 def test_tracked_info_from_row():
-    info = tracked_info_from_row("com.app", "en-US", "123", title="T", publisher="Studio")
+    info = tracked_info_from_row(
+        "com.app",
+        "en-US",
+        "123",
+        title="T",
+        publisher="Studio",
+        icon_hash="pxsha256:abc",
+    )
     assert info is not None
     assert info["package_id"] == "com.app"
     assert info["current"]["publisher"] == "Studio"
+    assert info["current"]["icon_hash"] == "pxsha256:abc"
     assert storage_key(info) == "com.app_en-US_123"
 
 
@@ -38,6 +46,7 @@ def test_tracked_info_to_apps_row_roundtrip():
     row = tracked_info_to_apps_row(info)
     assert row["package_id"] == "com.app"
     assert "publisher" in row
+    assert "icon_hash" in row
     assert '"s"' in row["screenshots"]
 
 

@@ -40,6 +40,7 @@ def tracked_info_from_row(
     summary: Any = "",
     description: Any = "",
     icon: Any = "",
+    icon_hash: Any = "",
     header_image: Any = "",
     publisher: Any = "",
     screenshots: Any = "[]",
@@ -61,6 +62,7 @@ def tracked_info_from_row(
             "description": "" if _is_na(description) else _cell_str(description),
             "publisher": "" if _is_na(publisher) else _cell_str(publisher),
             "icon": "" if _is_na(icon) else _cell_str(icon),
+            "icon_hash": "" if _is_na(icon_hash) else _cell_str(icon_hash),
             "header_image": "" if _is_na(header_image) else _cell_str(header_image),
             "screenshots": parse_json_list(screenshots) if not _is_na(screenshots) else [],
         }
@@ -80,6 +82,7 @@ def tracked_info_from_row(
             "description": _cell_str(description),
             "publisher": _cell_str(publisher),
             "icon": _cell_str(icon),
+            "icon_hash": _cell_str(icon_hash),
             "header_image": _cell_str(header_image),
             "screenshots": parse_json_list(screenshots),
         }
@@ -111,6 +114,7 @@ def tracked_info_to_apps_row(info: Dict[str, Any]) -> Dict[str, str]:
         "description": current["description"],
         "publisher": current.get("publisher", ""),
         "icon": current.get("icon", ""),
+        "icon_hash": current.get("icon_hash", ""),
         "header_image": current.get("header_image", ""),
         "screenshots": json.dumps(current.get("screenshots", []), ensure_ascii=False),
         "history": json.dumps(info.get("history", []), ensure_ascii=False),

@@ -81,6 +81,7 @@ def current_dict_from_fetch_result(result):
         "description": result["description"],
         "publisher": publisher_from_fetch(result),
         "icon": result.get("icon", ""),
+        "icon_hash": result.get("iconHash", result.get("icon_hash", "")),
         "header_image": result.get("headerImage", ""),
         "screenshots": result.get("screenshots", []),
     }

@@ -11,6 +11,7 @@ class AppSnapshot:
     summary: str = ""
     description: str = ""
     icon: str = ""
+    icon_hash: str = ""
     header_image: str = ""
     screenshots: List[str] = field(default_factory=list)
 
@@ -42,6 +43,7 @@ def snapshot_from_fetch(res: Dict[str, Any]) -> AppSnapshot:
         summary=str(res.get("summary", "")).strip(),
         description=str(res.get("description", "")).strip(),
         icon=str(res.get("icon", "")).strip(),
+        icon_hash=str(res.get("iconHash", res.get("icon_hash", ""))).strip(),
         header_image=str(res.get("headerImage", res.get("header_image", ""))).strip(),
         screenshots=list(res.get("screenshots") or []),
     )
@@ -58,6 +60,7 @@ def snapshot_from_current(current: Dict[str, Any]) -> Tuple[AppSnapshot, bool]:
             summary=old_s or "",
             description=old_d or "",
             icon=str(current.get("icon") or "").strip(),
+            icon_hash=str(current.get("icon_hash") or "").strip(),
             header_image=str(current.get("header_image") or "").strip(),
             screenshots=list(current.get("screenshots") or []),
         ),
@@ -72,6 +75,7 @@ def snapshot_from_row(
     icon: Any,
     header_image: Any,
     screenshots: List[str],
+    icon_hash: Any = "",
 ) -> Tuple[AppSnapshot, bool]:
     old_t = clean_val(title)
     old_s = clean_val(summary)
@@ -83,6 +87,7 @@ def snapshot_from_row(
             summary=old_s or "",
             description=old_d or "",
             icon=clean_val(icon) or "",
+            icon_hash=clean_val(icon_hash) or "",
             header_image=clean_val(header_image) or "",
             screenshots=screenshots,
         ),
@@ -101,6 +106,14 @@ def _is_rollback(
         if all(getattr(new, f) == past.get(f) for f in fields):
             return True
     return False
+
+
+def _has_icon_changed(old: AppSnapshot, new: AppSnapshot) -> bool:
+    if not old.icon or old.icon == "nan" or new.icon == old.icon:
+        return False
+    if old.icon_hash and new.icon_hash:
+        return old.icon_hash != new.icon_hash
+    return True
 
 
 def detect_changes(
@@ -138,7 +151,7 @@ def detect_changes(
         if new.description != old.description:
             changed.append("FD")
 
-    if old.icon and old.icon != "nan" and new.icon != old.icon:
+    if _has_icon_changed(old, new):
         changed.append("Иконка")
     if old.header_image and old.header_image != "nan" and new.header_image != old.header_image:
         changed.append("Feature Graphic")
@@ -182,6 +195,7 @@ def current_dict_from_snapshot(snap: AppSnapshot) -> Dict[str, Any]:
         "summary": snap.summary,
         "description": snap.description,
         "icon": snap.icon,
+        "icon_hash": snap.icon_hash,
         "header_image": snap.header_image,
         "screenshots": snap.screenshots,
     }
@@ -190,6 +204,10 @@ def current_dict_from_snapshot(snap: AppSnapshot) -> Dict[str, Any]:
 def fill_missing_assets(current: Dict[str, Any], new: AppSnapshot) -> None:
     if (not current.get("icon") or current.get("icon") == "nan") and new.icon:
         current["icon"] = new.icon
+    if new.icon_hash and (not current.get("icon_hash") or current.get("icon_hash") == new.icon_hash):
+        current["icon_hash"] = new.icon_hash
+        if new.icon:
+            current["icon"] = new.icon
     if (not current.get("header_image") or current.get("header_image") == "nan") and new.header_image:
         current["header_image"] = new.header_image
     if (not current.get("screenshots") or len(current.get("screenshots", [])) == 0) and new.screenshots:

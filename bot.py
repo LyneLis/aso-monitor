@@ -35,9 +35,17 @@ def write_snapshot_to_row(row, snap, metadata=None):
     row["summary"] = snap.summary
     row["description"] = snap.description
     row["icon"] = snap.icon
+    row["icon_hash"] = snap.icon_hash
     row["header_image"] = snap.header_image
     row["screenshots"] = json.dumps(snap.screenshots, ensure_ascii=False)
     write_metadata_to_row(row, metadata)
+
+
+def sync_equivalent_icon_to_row(row, snap):
+    if snap.icon_hash and (not row.get("icon_hash") or row.get("icon_hash") == snap.icon_hash):
+        row["icon_hash"] = snap.icon_hash
+        if snap.icon:
+            row["icon"] = snap.icon
 
 
 def append_check_log(row, status, **extra):
@@ -126,6 +134,7 @@ def check_apps(fetcher=None):
                 row.get("icon"),
                 row.get("header_image"),
                 old_scr,
+                row.get("icon_hash"),
             )
             is_ios = str(p_id).isdigit()
 
@@ -172,6 +181,7 @@ def check_apps(fetcher=None):
                 current_log.append({"time": get_minsk_time(), "status": "🟢 Авто: Исправление ошибки"})
                 write_snapshot_to_row(row, new_snap, outcome.metadata)
             else:
+                sync_equivalent_icon_to_row(row, new_snap)
                 current_log.append({"time": get_minsk_time(), "status": "🟢 Авто: Без изменений"})
 
             row["check_log"] = json.dumps(current_log[-5:], ensure_ascii=False)

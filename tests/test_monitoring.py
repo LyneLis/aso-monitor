@@ -33,6 +33,40 @@ def test_check_item_snapshots_uses_fetcher_and_detects_change():
     assert outcome.new_snapshot.title == "New"
 
 
+def test_check_item_snapshots_uses_icon_hash_to_ignore_cdn_url_noise():
+    old = AppSnapshot(
+        title="App",
+        summary="S",
+        description="D",
+        icon="https://cdn.example.com/icon-v1.jpg",
+        icon_hash="pxsha256:same",
+    )
+
+    def fetcher(package_id, geo):
+        return {
+            "title": "App",
+            "summary": "S",
+            "description": "D",
+            "icon": "https://cdn.example.com/icon-v2.jpg",
+            "iconHash": "pxsha256:same",
+            "headerImage": "",
+            "screenshots": [],
+        }
+
+    outcome = check_item_snapshots(
+        "com.test.app",
+        "us",
+        old,
+        [],
+        False,
+        label_style="bot",
+        fetcher=fetcher,
+    )
+
+    assert outcome.changed == []
+    assert outcome.new_snapshot.icon_hash == "pxsha256:same"
+
+
 def test_check_item_snapshots_preserves_ios_summary_when_web_subtitle_unavailable():
     old = AppSnapshot(title="App", summary="Sous-titre", description="Description")
 

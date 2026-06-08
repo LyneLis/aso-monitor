@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from core.image_hash import ensure_icon_hashes
 from core.compare import (
     AppSnapshot,
     ChangeResult,
@@ -52,6 +53,7 @@ def check_item_snapshots(
     is_ios_package = is_ios or str(package_id).isdigit()
     fetched = fetcher(package_id, geo)
     new_snapshot = snapshot_from_fetch(fetched)
+    ensure_icon_hashes(old_snapshot, new_snapshot)
     if is_ios_package and fetched.get("summary_unavailable"):
         if is_valid_subtitle_candidate(old_snapshot.summary):
             new_snapshot.summary = old_snapshot.summary

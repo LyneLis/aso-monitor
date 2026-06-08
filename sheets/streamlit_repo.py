@@ -75,6 +75,7 @@ class StreamlitAppsRepository:
                 description=row.get("description"),
                 publisher=row.get("publisher"),
                 icon=row.get("icon"),
+                icon_hash=row.get("icon_hash"),
                 header_image=row.get("header_image"),
                 screenshots=row.get("screenshots"),
                 history=row.get("history"),

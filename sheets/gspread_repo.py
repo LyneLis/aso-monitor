@@ -7,6 +7,9 @@ from core.config import Settings
 from sheets.serialization import parse_json_list
 
 
+APP_EXTRA_HEADERS = ("icon_hash",)
+
+
 class GspreadAppsRepository:
     def __init__(self, settings: Settings):
         self._settings = settings
@@ -24,6 +27,10 @@ class GspreadAppsRepository:
         sh = gc.open_by_url(self._settings.spreadsheet_url)
         self._worksheet = sh.get_worksheet(0)
         self._headers = self._worksheet.row_values(1)
+        for header in APP_EXTRA_HEADERS:
+            if header not in self._headers:
+                self._headers.append(header)
+                self._worksheet.update_cell(1, len(self._headers), header)
 
     @property
     def headers(self) -> List[str]:
