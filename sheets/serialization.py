@@ -42,8 +42,10 @@ def tracked_info_from_row(
     icon: Any = "",
     icon_hash: Any = "",
     header_image: Any = "",
+    header_image_hash: Any = "",
     publisher: Any = "",
     screenshots: Any = "[]",
+    screenshot_hashes: Any = "[]",
     history: Any = "[]",
     check_log: Any = "[]",
     ai_audit: Any = "",
@@ -64,7 +66,9 @@ def tracked_info_from_row(
             "icon": "" if _is_na(icon) else _cell_str(icon),
             "icon_hash": "" if _is_na(icon_hash) else _cell_str(icon_hash),
             "header_image": "" if _is_na(header_image) else _cell_str(header_image),
+            "header_image_hash": "" if _is_na(header_image_hash) else _cell_str(header_image_hash),
             "screenshots": parse_json_list(screenshots) if not _is_na(screenshots) else [],
+            "screenshot_hashes": parse_json_list(screenshot_hashes) if not _is_na(screenshot_hashes) else [],
         }
         c_log = parse_json_list(check_log) if not _is_na(check_log) else []
         hist = parse_json_list(history) if not _is_na(history) else []
@@ -84,7 +88,9 @@ def tracked_info_from_row(
             "icon": _cell_str(icon),
             "icon_hash": _cell_str(icon_hash),
             "header_image": _cell_str(header_image),
+            "header_image_hash": _cell_str(header_image_hash),
             "screenshots": parse_json_list(screenshots),
+            "screenshot_hashes": parse_json_list(screenshot_hashes),
         }
         c_log = parse_json_list(check_log)
         hist = parse_json_list(history)
@@ -116,7 +122,9 @@ def tracked_info_to_apps_row(info: Dict[str, Any]) -> Dict[str, str]:
         "icon": current.get("icon", ""),
         "icon_hash": current.get("icon_hash", ""),
         "header_image": current.get("header_image", ""),
+        "header_image_hash": current.get("header_image_hash", ""),
         "screenshots": json.dumps(current.get("screenshots", []), ensure_ascii=False),
+        "screenshot_hashes": json.dumps(current.get("screenshot_hashes", []), ensure_ascii=False),
         "history": json.dumps(info.get("history", []), ensure_ascii=False),
         "check_log": json.dumps(info.get("check_log", []), ensure_ascii=False),
         "ai_audit": info.get("ai_audit", ""),

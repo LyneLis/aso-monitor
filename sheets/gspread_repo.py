@@ -7,7 +7,7 @@ from core.config import Settings
 from sheets.serialization import parse_json_list
 
 
-APP_EXTRA_HEADERS = ("icon_hash",)
+APP_EXTRA_HEADERS = ("icon_hash", "header_image_hash", "screenshot_hashes")
 
 
 class GspreadAppsRepository:

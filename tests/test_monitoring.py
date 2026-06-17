@@ -67,6 +67,44 @@ def test_check_item_snapshots_uses_icon_hash_to_ignore_cdn_url_noise():
     assert outcome.new_snapshot.icon_hash == "pxsha256:same"
 
 
+def test_check_item_snapshots_uses_visual_hashes_to_ignore_cdn_url_noise():
+    old = AppSnapshot(
+        title="App",
+        summary="S",
+        description="D",
+        header_image="https://cdn.example.com/fg-v1.jpg",
+        header_image_hash="pxsha256:fg",
+        screenshots=["https://cdn.example.com/screen-v1.jpg"],
+        screenshot_hashes=["pxsha256:screen"],
+    )
+
+    def fetcher(package_id, geo):
+        return {
+            "title": "App",
+            "summary": "S",
+            "description": "D",
+            "icon": "",
+            "headerImage": "https://cdn.example.com/fg-v2.jpg",
+            "headerImageHash": "pxsha256:fg",
+            "screenshots": ["https://cdn.example.com/screen-v2.jpg"],
+            "screenshotHashes": ["pxsha256:screen"],
+        }
+
+    outcome = check_item_snapshots(
+        "com.test.app",
+        "us",
+        old,
+        [],
+        False,
+        label_style="bot",
+        fetcher=fetcher,
+    )
+
+    assert outcome.changed == []
+    assert outcome.new_snapshot.header_image_hash == "pxsha256:fg"
+    assert outcome.new_snapshot.screenshot_hashes == ["pxsha256:screen"]
+
+
 def test_check_item_snapshots_preserves_ios_summary_when_web_subtitle_unavailable():
     old = AppSnapshot(title="App", summary="Sous-titre", description="Description")
 

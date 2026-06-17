@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+from core.image_hash import visual_hashes_match
+
 TEXT_LABELS_WEB = frozenset({"Title", "SD", "FD"})
 TEXT_LABELS_BOT = frozenset({"Название", "SD", "Subtitle", "FD", "Описание"})
 
@@ -13,7 +15,9 @@ class AppSnapshot:
     icon: str = ""
     icon_hash: str = ""
     header_image: str = ""
+    header_image_hash: str = ""
     screenshots: List[str] = field(default_factory=list)
+    screenshot_hashes: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -45,7 +49,9 @@ def snapshot_from_fetch(res: Dict[str, Any]) -> AppSnapshot:
         icon=str(res.get("icon", "")).strip(),
         icon_hash=str(res.get("iconHash", res.get("icon_hash", ""))).strip(),
         header_image=str(res.get("headerImage", res.get("header_image", ""))).strip(),
+        header_image_hash=str(res.get("headerImageHash", res.get("header_image_hash", ""))).strip(),
         screenshots=list(res.get("screenshots") or []),
+        screenshot_hashes=list(res.get("screenshotHashes", res.get("screenshot_hashes", [])) or []),
     )
 
 
@@ -62,7 +68,9 @@ def snapshot_from_current(current: Dict[str, Any]) -> Tuple[AppSnapshot, bool]:
             icon=str(current.get("icon") or "").strip(),
             icon_hash=str(current.get("icon_hash") or "").strip(),
             header_image=str(current.get("header_image") or "").strip(),
+            header_image_hash=str(current.get("header_image_hash") or "").strip(),
             screenshots=list(current.get("screenshots") or []),
+            screenshot_hashes=list(current.get("screenshot_hashes") or []),
         ),
         is_table_error,
     )
@@ -76,6 +84,8 @@ def snapshot_from_row(
     header_image: Any,
     screenshots: List[str],
     icon_hash: Any = "",
+    header_image_hash: Any = "",
+    screenshot_hashes: Optional[List[str]] = None,
 ) -> Tuple[AppSnapshot, bool]:
     old_t = clean_val(title)
     old_s = clean_val(summary)
@@ -89,7 +99,9 @@ def snapshot_from_row(
             icon=clean_val(icon) or "",
             icon_hash=clean_val(icon_hash) or "",
             header_image=clean_val(header_image) or "",
+            header_image_hash=clean_val(header_image_hash) or "",
             screenshots=screenshots,
+            screenshot_hashes=screenshot_hashes or [],
         ),
         is_table_error,
     )
@@ -113,6 +125,32 @@ def _has_icon_changed(old: AppSnapshot, new: AppSnapshot) -> bool:
         return False
     if old.icon_hash and new.icon_hash:
         return old.icon_hash != new.icon_hash
+    return True
+
+
+def _has_header_image_changed(old: AppSnapshot, new: AppSnapshot) -> bool:
+    if not old.header_image or old.header_image == "nan" or new.header_image == old.header_image:
+        return False
+    if old.header_image_hash and new.header_image_hash:
+        return not visual_hashes_match(old.header_image_hash, new.header_image_hash)
+    return True
+
+
+def _has_screenshots_changed(old: AppSnapshot, new: AppSnapshot) -> bool:
+    if new.screenshots == old.screenshots:
+        return False
+    if (
+        old.screenshot_hashes
+        and new.screenshot_hashes
+        and len(old.screenshot_hashes) == len(old.screenshots)
+        and len(new.screenshot_hashes) == len(new.screenshots)
+        and all(old.screenshot_hashes)
+        and all(new.screenshot_hashes)
+    ):
+        return any(
+            not visual_hashes_match(old_hash, new_hash)
+            for old_hash, new_hash in zip(old.screenshot_hashes, new.screenshot_hashes)
+        )
     return True
 
 
@@ -153,9 +191,9 @@ def detect_changes(
 
     if _has_icon_changed(old, new):
         changed.append("Иконка")
-    if old.header_image and old.header_image != "nan" and new.header_image != old.header_image:
+    if _has_header_image_changed(old, new):
         changed.append("Feature Graphic")
-    if new.screenshots != old.screenshots:
+    if _has_screenshots_changed(old, new):
         changed.append("Скриншоты")
 
     result.changed = changed
@@ -197,7 +235,9 @@ def current_dict_from_snapshot(snap: AppSnapshot) -> Dict[str, Any]:
         "icon": snap.icon,
         "icon_hash": snap.icon_hash,
         "header_image": snap.header_image,
+        "header_image_hash": snap.header_image_hash,
         "screenshots": snap.screenshots,
+        "screenshot_hashes": snap.screenshot_hashes,
     }
 
 
@@ -210,8 +250,18 @@ def fill_missing_assets(current: Dict[str, Any], new: AppSnapshot) -> None:
             current["icon"] = new.icon
     if (not current.get("header_image") or current.get("header_image") == "nan") and new.header_image:
         current["header_image"] = new.header_image
+    if new.header_image_hash and (not current.get("header_image_hash") or current.get("header_image_hash") == new.header_image_hash):
+        current["header_image_hash"] = new.header_image_hash
+        if new.header_image:
+            current["header_image"] = new.header_image
     if (not current.get("screenshots") or len(current.get("screenshots", [])) == 0) and new.screenshots:
         current["screenshots"] = new.screenshots
+    if new.screenshot_hashes and (
+        not current.get("screenshot_hashes") or current.get("screenshot_hashes") == new.screenshot_hashes
+    ):
+        current["screenshot_hashes"] = new.screenshot_hashes
+        if new.screenshots:
+            current["screenshots"] = new.screenshots
 
 
 def format_single_locale_report(

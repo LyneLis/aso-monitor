@@ -54,6 +54,111 @@ def test_detect_changes_reports_icon_change_when_pixel_hash_differs():
     assert "Иконка" in r.changed
 
 
+def test_detect_changes_ignores_feature_graphic_url_change_when_pixel_hash_matches():
+    old = AppSnapshot(
+        header_image="https://cdn.example.com/fg-v1.jpg",
+        header_image_hash="pxsha256:same",
+    )
+    new = AppSnapshot(
+        header_image="https://cdn.example.com/fg-v2.jpg",
+        header_image_hash="pxsha256:same",
+    )
+
+    r = detect_changes(old, new, [], label_style="bot")
+
+    assert "Feature Graphic" not in r.changed
+
+
+def test_detect_changes_reports_feature_graphic_change_when_pixel_hash_differs():
+    old = AppSnapshot(
+        header_image="https://cdn.example.com/fg-v1.jpg",
+        header_image_hash="pxsha256:old",
+    )
+    new = AppSnapshot(
+        header_image="https://cdn.example.com/fg-v2.jpg",
+        header_image_hash="pxsha256:new",
+    )
+
+    r = detect_changes(old, new, [], label_style="bot")
+
+    assert "Feature Graphic" in r.changed
+
+
+def test_detect_changes_ignores_feature_graphic_when_visual_hash_is_close():
+    old = AppSnapshot(
+        header_image="https://cdn.example.com/fg-v1.jpg",
+        header_image_hash="vhash64:0000000000000000",
+    )
+    new = AppSnapshot(
+        header_image="https://cdn.example.com/fg-v2.jpg",
+        header_image_hash="vhash64:0000000000000003",
+    )
+
+    r = detect_changes(old, new, [], label_style="bot")
+
+    assert "Feature Graphic" not in r.changed
+
+
+def test_detect_changes_reports_feature_graphic_when_visual_hash_is_far():
+    old = AppSnapshot(
+        header_image="https://cdn.example.com/fg-v1.jpg",
+        header_image_hash="vhash64:0000000000000000",
+    )
+    new = AppSnapshot(
+        header_image="https://cdn.example.com/fg-v2.jpg",
+        header_image_hash="vhash64:ffffffffffffffff",
+    )
+
+    r = detect_changes(old, new, [], label_style="bot")
+
+    assert "Feature Graphic" in r.changed
+
+
+def test_detect_changes_ignores_screenshot_url_change_when_pixel_hashes_match():
+    old = AppSnapshot(
+        screenshots=["https://cdn.example.com/screen-a-v1.jpg", "https://cdn.example.com/screen-b-v1.jpg"],
+        screenshot_hashes=["pxsha256:a", "pxsha256:b"],
+    )
+    new = AppSnapshot(
+        screenshots=["https://cdn.example.com/screen-a-v2.jpg", "https://cdn.example.com/screen-b-v2.jpg"],
+        screenshot_hashes=["pxsha256:a", "pxsha256:b"],
+    )
+
+    r = detect_changes(old, new, [], label_style="bot")
+
+    assert "Скриншоты" not in r.changed
+
+
+def test_detect_changes_ignores_screenshot_when_visual_hashes_are_close():
+    old = AppSnapshot(
+        screenshots=["https://cdn.example.com/screen-v1.jpg"],
+        screenshot_hashes=["vhash64:0000000000000000"],
+    )
+    new = AppSnapshot(
+        screenshots=["https://cdn.example.com/screen-v2.jpg"],
+        screenshot_hashes=["vhash64:0000000000000007"],
+    )
+
+    r = detect_changes(old, new, [], label_style="bot")
+
+    assert "Скриншоты" not in r.changed
+
+
+def test_detect_changes_reports_screenshot_change_when_pixel_hashes_differ():
+    old = AppSnapshot(
+        screenshots=["https://cdn.example.com/screen-a-v1.jpg"],
+        screenshot_hashes=["pxsha256:a"],
+    )
+    new = AppSnapshot(
+        screenshots=["https://cdn.example.com/screen-a-v2.jpg"],
+        screenshot_hashes=["pxsha256:b"],
+    )
+
+    r = detect_changes(old, new, [], label_style="bot")
+
+    assert "Скриншоты" in r.changed
+
+
 def test_table_error_skips_diff():
     old = AppSnapshot()
     new = AppSnapshot(title="T", summary="S", description="D")
@@ -79,3 +184,27 @@ def test_fill_missing_assets_refreshes_equivalent_icon_url_and_hash():
 
     assert current["icon"] == "https://cdn.example.com/icon-v2.jpg"
     assert current["icon_hash"] == "pxsha256:same"
+
+
+def test_fill_missing_assets_refreshes_equivalent_feature_graphic_and_screenshots():
+    current = {
+        "header_image": "https://cdn.example.com/fg-v1.jpg",
+        "header_image_hash": "pxsha256:fg",
+        "screenshots": ["https://cdn.example.com/screen-v1.jpg"],
+        "screenshot_hashes": ["pxsha256:screen"],
+    }
+
+    fill_missing_assets(
+        current,
+        AppSnapshot(
+            header_image="https://cdn.example.com/fg-v2.jpg",
+            header_image_hash="pxsha256:fg",
+            screenshots=["https://cdn.example.com/screen-v2.jpg"],
+            screenshot_hashes=["pxsha256:screen"],
+        ),
+    )
+
+    assert current["header_image"] == "https://cdn.example.com/fg-v2.jpg"
+    assert current["header_image_hash"] == "pxsha256:fg"
+    assert current["screenshots"] == ["https://cdn.example.com/screen-v2.jpg"]
+    assert current["screenshot_hashes"] == ["pxsha256:screen"]

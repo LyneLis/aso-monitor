@@ -85,7 +85,9 @@ def current_dict_from_fetch_result(result):
         "icon": result.get("icon", ""),
         "icon_hash": result.get("iconHash", result.get("icon_hash", "")),
         "header_image": result.get("headerImage", ""),
+        "header_image_hash": result.get("headerImageHash", result.get("header_image_hash", "")),
         "screenshots": result.get("screenshots", []),
+        "screenshot_hashes": result.get("screenshotHashes", result.get("screenshot_hashes", [])),
     }
 
 

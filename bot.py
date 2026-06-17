@@ -37,7 +37,9 @@ def write_snapshot_to_row(row, snap, metadata=None):
     row["icon"] = snap.icon
     row["icon_hash"] = snap.icon_hash
     row["header_image"] = snap.header_image
+    row["header_image_hash"] = snap.header_image_hash
     row["screenshots"] = json.dumps(snap.screenshots, ensure_ascii=False)
+    row["screenshot_hashes"] = json.dumps(snap.screenshot_hashes, ensure_ascii=False)
     write_metadata_to_row(row, metadata)
 
 
@@ -46,6 +48,22 @@ def sync_equivalent_icon_to_row(row, snap):
         row["icon_hash"] = snap.icon_hash
         if snap.icon:
             row["icon"] = snap.icon
+
+
+def sync_equivalent_visuals_to_row(row, snap):
+    sync_equivalent_icon_to_row(row, snap)
+    if snap.header_image_hash and (
+        not row.get("header_image_hash") or row.get("header_image_hash") == snap.header_image_hash
+    ):
+        row["header_image_hash"] = snap.header_image_hash
+        if snap.header_image:
+            row["header_image"] = snap.header_image
+    if snap.screenshot_hashes:
+        stored_hashes = parse_json_list(row.get("screenshot_hashes", "[]"))
+        if not stored_hashes or stored_hashes == snap.screenshot_hashes:
+            row["screenshot_hashes"] = json.dumps(snap.screenshot_hashes, ensure_ascii=False)
+            if snap.screenshots:
+                row["screenshots"] = json.dumps(snap.screenshots, ensure_ascii=False)
 
 
 def append_check_log(row, status, **extra):
@@ -135,6 +153,8 @@ def check_apps(fetcher=None):
                 row.get("header_image"),
                 old_scr,
                 row.get("icon_hash"),
+                row.get("header_image_hash"),
+                parse_json_list(row.get("screenshot_hashes", "[]")),
             )
             is_ios = str(p_id).isdigit()
 
@@ -181,7 +201,7 @@ def check_apps(fetcher=None):
                 current_log.append({"time": get_minsk_time(), "status": "🟢 Авто: Исправление ошибки"})
                 write_snapshot_to_row(row, new_snap, outcome.metadata)
             else:
-                sync_equivalent_icon_to_row(row, new_snap)
+                sync_equivalent_visuals_to_row(row, new_snap)
                 current_log.append({"time": get_minsk_time(), "status": "🟢 Авто: Без изменений"})
 
             row["check_log"] = json.dumps(current_log[-5:], ensure_ascii=False)
