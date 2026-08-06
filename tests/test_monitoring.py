@@ -105,6 +105,86 @@ def test_check_item_snapshots_uses_visual_hashes_to_ignore_cdn_url_noise():
     assert outcome.new_snapshot.screenshot_hashes == ["pxsha256:screen"]
 
 
+def test_check_item_snapshots_preserves_android_fields_when_fetch_returns_empty_payload():
+    old = AppSnapshot(
+        title="Stored title",
+        summary="Stored summary",
+        description="Stored description",
+        icon="https://cdn.example.com/icon.jpg",
+        icon_hash="pxsha256:icon",
+        header_image="https://cdn.example.com/fg.jpg",
+        header_image_hash="vhash64:0000000000000000",
+        screenshots=["https://cdn.example.com/screen.jpg"],
+        screenshot_hashes=["vhash64:0000000000000000"],
+    )
+
+    def fetcher(package_id, geo):
+        return {
+            "title": "",
+            "summary": "",
+            "description": "",
+            "icon": "",
+            "headerImage": "",
+            "screenshots": [],
+        }
+
+    outcome = check_item_snapshots(
+        "com.test.app",
+        "pt-PT",
+        old,
+        [],
+        False,
+        label_style="bot",
+        fetcher=fetcher,
+    )
+
+    assert outcome.changed == []
+    assert outcome.new_snapshot.title == "Stored title"
+    assert outcome.new_snapshot.summary == "Stored summary"
+    assert outcome.new_snapshot.description == "Stored description"
+    assert outcome.new_snapshot.icon == "https://cdn.example.com/icon.jpg"
+    assert outcome.new_snapshot.header_image == "https://cdn.example.com/fg.jpg"
+    assert outcome.new_snapshot.screenshots == ["https://cdn.example.com/screen.jpg"]
+
+
+def test_check_item_snapshots_preserves_android_visuals_when_fetch_returns_empty_assets():
+    old = AppSnapshot(
+        title="App",
+        summary="Summary",
+        description="Description",
+        header_image="https://cdn.example.com/fg.jpg",
+        header_image_hash="vhash64:0000000000000000",
+        screenshots=["https://cdn.example.com/screen.jpg"],
+        screenshot_hashes=["vhash64:0000000000000000"],
+    )
+
+    def fetcher(package_id, geo):
+        return {
+            "title": "App",
+            "summary": "Summary",
+            "description": "Description",
+            "icon": "",
+            "headerImage": "",
+            "screenshots": [],
+        }
+
+    outcome = check_item_snapshots(
+        "com.test.app",
+        "pt-PT",
+        old,
+        [],
+        False,
+        label_style="bot",
+        fetcher=fetcher,
+    )
+
+    assert outcome.changed == []
+    assert outcome.new_snapshot.header_image == "https://cdn.example.com/fg.jpg"
+    assert outcome.new_snapshot.header_image_hash == "vhash64:0000000000000000"
+    assert outcome.new_snapshot.screenshots == ["https://cdn.example.com/screen.jpg"]
+    assert outcome.new_snapshot.screenshot_hashes == ["vhash64:0000000000000000"]
+
+
 def test_check_item_snapshots_preserves_ios_summary_when_web_subtitle_unavailable():
     old = AppSnapshot(title="App", summary="Sous-titre", description="Description")
 

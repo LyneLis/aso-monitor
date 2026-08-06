@@ -33,6 +33,25 @@ class ItemCheckOutcome:
         return self.result.text_payload
 
 
+def preserve_transient_empty_fields(old_snapshot: AppSnapshot, new_snapshot: AppSnapshot, fetched: Dict[str, Any], is_ios: bool) -> None:
+    if old_snapshot.title and not new_snapshot.title:
+        new_snapshot.title = old_snapshot.title
+    if old_snapshot.description and not new_snapshot.description:
+        new_snapshot.description = old_snapshot.description
+    if old_snapshot.summary and not new_snapshot.summary and not (is_ios and fetched.get("summary_unavailable")):
+        new_snapshot.summary = old_snapshot.summary
+
+    if old_snapshot.icon and not new_snapshot.icon:
+        new_snapshot.icon = old_snapshot.icon
+        new_snapshot.icon_hash = old_snapshot.icon_hash
+    if old_snapshot.header_image and not new_snapshot.header_image:
+        new_snapshot.header_image = old_snapshot.header_image
+        new_snapshot.header_image_hash = old_snapshot.header_image_hash
+    if old_snapshot.screenshots and not new_snapshot.screenshots:
+        new_snapshot.screenshots = list(old_snapshot.screenshots)
+        new_snapshot.screenshot_hashes = list(old_snapshot.screenshot_hashes)
+
+
 def check_item_snapshots(
     package_id: str,
     geo: str,
@@ -53,6 +72,7 @@ def check_item_snapshots(
     is_ios_package = is_ios or str(package_id).isdigit()
     fetched = fetcher(package_id, geo)
     new_snapshot = snapshot_from_fetch(fetched)
+    preserve_transient_empty_fields(old_snapshot, new_snapshot, fetched, is_ios_package)
     ensure_visual_asset_hashes(old_snapshot, new_snapshot)
     if is_ios_package and fetched.get("summary_unavailable"):
         if is_valid_subtitle_candidate(old_snapshot.summary):
