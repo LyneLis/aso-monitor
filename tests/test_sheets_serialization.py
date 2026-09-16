@@ -1,6 +1,6 @@
 import pandas as pd
 
-from sheets.serialization import parse_json_list, storage_key, tracked_info_from_row, tracked_info_to_apps_row
+from sheets.serialization import APP_HEADERS, parse_json_list, storage_key, tracked_info_from_row, tracked_info_to_apps_row
 from sheets.streamlit_repo import StreamlitAppsRepository
 
 
@@ -54,14 +54,15 @@ def test_tracked_info_to_apps_row_roundtrip():
     assert "header_image_hash" in row
     assert "screenshot_hashes" in row
     assert '"s"' in row["screenshots"]
+    assert tuple(row) == APP_HEADERS
 
 
-def test_streamlit_repo_save_records_error():
-    class BadConnection:
-        def update(self, worksheet, data):
-            raise RuntimeError("save failed")
+def test_streamlit_repo_save_records_error(monkeypatch):
+    def fail_write(rows):
+        raise RuntimeError("save failed")
 
-    repo = StreamlitAppsRepository(BadConnection(), True)
+    repo = StreamlitAppsRepository(object(), True)
+    monkeypatch.setattr(repo, "_replace_apps_rows", fail_write)
     info = tracked_info_from_row("com.app", "us", "1", title="A")
 
     assert repo.save_apps({"com.app_us_1": info}) is False
@@ -125,7 +126,7 @@ def test_streamlit_repo_load_apps_clears_previous_error():
     assert repo.load_errors == {}
 
 
-def test_streamlit_repo_save_merges_updated_keys_with_latest_sheet():
+def test_streamlit_repo_save_merges_updated_keys_with_latest_sheet(monkeypatch):
     remote_existing = tracked_info_from_row("com.app", "us", "1", title="Remote title", summary="Fresh")
     stale_existing = tracked_info_from_row("com.app", "us", "1", title="Local stale", summary="Old")
     added = tracked_info_from_row("com.new", "us", "1", title="New app")
@@ -139,12 +140,12 @@ def test_streamlit_repo_save_merges_updated_keys_with_latest_sheet():
             assert ttl == 0
             return pd.DataFrame([tracked_info_to_apps_row(remote_existing)])
 
-        def update(self, worksheet, data):
-            assert worksheet == "apps"
-            self.updated = data
+        def write_rows(self, rows):
+            self.updated = rows
 
     conn = Connection()
     repo = StreamlitAppsRepository(conn, True)
+    monkeypatch.setattr(repo, "_replace_apps_rows", conn.write_rows)
 
     assert repo.save_apps(
         {
@@ -154,14 +155,14 @@ def test_streamlit_repo_save_merges_updated_keys_with_latest_sheet():
         updated_keys={"com.new_us_1"},
     )
 
-    rows = conn.updated.to_dict("records")
+    rows = conn.updated
     by_package = {row["package_id"]: row for row in rows}
     assert by_package["com.app"]["title"] == "Remote title"
     assert by_package["com.app"]["summary"] == "Fresh"
     assert by_package["com.new"]["title"] == "New app"
 
 
-def test_streamlit_repo_cached_save_merges_updates_without_reads():
+def test_streamlit_repo_cached_save_merges_updates_without_reads(monkeypatch):
     existing = tracked_info_from_row("com.app", "us", "1", title="Existing app")
     first_update = tracked_info_from_row("com.one", "us", "1", title="First update")
     second_update = tracked_info_from_row("com.two", "us", "1", title="Second update")
@@ -175,12 +176,12 @@ def test_streamlit_repo_cached_save_merges_updates_without_reads():
             self.read_count += 1
             raise AssertionError("cached save should not read apps")
 
-        def update(self, worksheet, data):
-            assert worksheet == "apps"
-            self.updates.append(data.to_dict("records"))
+        def write_rows(self, rows):
+            self.updates.append(rows)
 
     conn = Connection()
     repo = StreamlitAppsRepository(conn, True)
+    monkeypatch.setattr(repo, "_replace_apps_rows", conn.write_rows)
     initial_data = {"com.app_us_1": existing}
 
     with repo.cached_save(initial_data):

@@ -1,9 +1,7 @@
 from contextlib import contextmanager
-from typing import Any, Dict, Iterable, Iterator, Optional, Set
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Set
 
-import pandas as pd
-
-from sheets.serialization import storage_key, tracked_info_from_row, tracked_info_to_apps_row
+from sheets.serialization import APP_HEADERS, storage_key, tracked_info_from_row, tracked_info_to_apps_row
 
 
 class StreamlitAppsRepository:
@@ -110,6 +108,44 @@ class StreamlitAppsRepository:
         finally:
             self.end_cached_save()
 
+    def _replace_apps_rows(self, rows: List[Dict[str, str]]) -> None:
+        headers = list(APP_HEADERS)
+        values = [headers] + [[row.get(header, "") for header in headers] for row in rows]
+
+        # Reuse the configured connection; update() would clear the sheet first.
+        client = self._conn.client
+        worksheet = client._select_worksheet(worksheet="apps")
+        requests = []
+        for dimension, required, current in (
+            ("ROWS", len(values), worksheet.row_count),
+            ("COLUMNS", len(headers), worksheet.col_count),
+        ):
+            if required > current:
+                requests.append({
+                    "appendDimension": {
+                        "sheetId": worksheet.id,
+                        "dimension": dimension,
+                        "length": required - current,
+                    }
+                })
+
+        # A full range clears obsolete values in the SAME atomic write, not before it.
+        # The value-only mask preserves formatting, notes, and validation rules.
+        requests.append({
+            "updateCells": {
+                "range": {"sheetId": worksheet.id},
+                "rows": [
+                    {"values": [
+                        {"userEnteredValue": {"stringValue": "" if value is None else str(value)}}
+                        for value in row
+                    ]}
+                    for row in values
+                ],
+                "fields": "userEnteredValue",
+            }
+        })
+        worksheet.spreadsheet.batch_update({"requests": requests})
+
     def save_apps(
         self,
         data: Dict[str, Dict[str, Any]],
@@ -135,7 +171,7 @@ class StreamlitAppsRepository:
                 data_to_save = data
 
             rows = [tracked_info_to_apps_row(info) for info in data_to_save.values()]
-            self._conn.update(worksheet="apps", data=pd.DataFrame(rows))
+            self._replace_apps_rows(rows)
             if cache_active:
                 self._apps_save_cache = dict(data_to_save)
             self.last_error = None

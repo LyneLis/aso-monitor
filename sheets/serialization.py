@@ -4,6 +4,13 @@ from typing import Any, Dict, List, Optional
 from core.app_ids import normalize_app_id
 
 
+APP_HEADERS = (
+    "package_id", "geo", "chat_id", "title", "summary", "description",
+    "publisher", "icon", "icon_hash", "header_image", "header_image_hash",
+    "screenshots", "screenshot_hashes", "history", "check_log", "ai_audit",
+)
+
+
 def parse_json_list(value: Any, default: Optional[List] = None) -> List:
     default = default if default is not None else []
     if value is None:

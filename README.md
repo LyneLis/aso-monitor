@@ -115,3 +115,8 @@ There is also a monthly keep-alive workflow in `.github/workflows/keep_alive.yml
 - `app.py` is useful for manual checks, adding locales, deleting entries, and requesting ASO audits.
 - A row with a table error such as `#ERROR!` is repaired from fresh store data instead of being reported as a competitor change.
 - Telegram request failures are logged instead of being silently ignored.
+- Web saves replace the `apps` snapshot in one atomic Sheets batch, including removal
+  of obsolete values. There is no separate clear-before-write request. Empty snapshots
+  keep the column headers, and existing formatting is preserved.
+- This atomic write does not provide concurrency control between the site and bot.
+  Avoid overlapping checks until the separate concurrent-write work is completed.
